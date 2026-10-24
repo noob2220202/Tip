@@ -1,6 +1,7 @@
 """구매 흐름: 상품 선택 → 대상 링크 → 보내는 지갑 주소 → 주문 생성(입금 안내) / 내 주문 / 취소."""
 from __future__ import annotations
 
+import re
 import time
 
 import aiosqlite
@@ -21,6 +22,7 @@ router = Router(name="boost_order")
 
 
 class Buy(StatesGroup):
+    qty = State()
     link = State()
     address = State()
 
@@ -30,7 +32,7 @@ def _product_list(catalog: Catalog) -> str:
     for p in catalog.sellable():
         days = f" · {p.days}일" if p.days else ""
         desc = f"\n   <i>{esc(p.description)}</i>" if p.description else ""
-        lines.append(f"• <b>{esc(p.name)}</b> — <b>{money.fmt(p.price_micro)} USDT</b>{days}{desc}")
+        lines.append(f"• <b>{esc(p.name)}</b> — 개당 <b>{money.fmt(p.price_micro)} USDT</b>{days}{desc}")
     return "\n".join(lines)
 
 
@@ -39,7 +41,7 @@ async def show_products(target: Message, catalog: Catalog, texts: Texts) -> None
     if not products:
         await target.answer(texts.get("no_products"))
         return
-    rows = [[InlineKeyboardButton(text=f"{p.name} · {money.fmt(p.price_micro)} USDT", callback_data=f"p:{p.id}")]
+    rows = [[InlineKeyboardButton(text=f"{p.name} · 개당 {money.fmt(p.price_micro)} USDT", callback_data=f"p:{p.id}")]
             for p in products]
     await target.answer(texts.get("choose_product", list=_product_list(catalog)),
                         reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
@@ -64,10 +66,33 @@ async def pick_product(cb: CallbackQuery, catalog: Catalog, texts: Texts, state:
     if not p or not p.enabled:
         await cb.answer("판매하지 않는 상품입니다.", show_alert=True)
         return
-    await state.set_state(Buy.link)
+    await state.set_state(Buy.qty)
     await state.update_data(product_id=p.id)
-    await cb.message.answer(texts.get("ask_link", product=esc(p.name)), link_preview_options=NO_PREVIEW)
+    await cb.message.answer(texts.get("ask_qty", product=esc(p.name), unit=money.fmt(p.price_micro),
+                                      min=catalog.min_qty, max=catalog.max_qty))
     await cb.answer()
+
+
+def parse_qty(text: str) -> int | None:
+    t = text.strip().replace(",", "").replace(" ", "")
+    return int(t) if re.fullmatch(r"\d{1,6}", t) else None
+
+
+@router.message(Buy.qty, F.text)
+async def got_qty(message: Message, catalog: Catalog, texts: Texts, state: FSMContext) -> None:
+    n = parse_qty(message.text)
+    if n is None or not catalog.min_qty <= n <= catalog.max_qty:
+        await message.answer(texts.get("bad_qty", min=catalog.min_qty, max=catalog.max_qty))
+        return
+    p = catalog.get((await state.get_data()).get("product_id", ""))
+    if not p or not p.enabled:
+        await state.clear()
+        await message.answer(texts.get("error"), reply_markup=menu_keyboard(texts))
+        return
+    await state.update_data(qty=n)
+    await state.set_state(Buy.link)
+    await message.answer(texts.get("ask_link", product=esc(p.name), qty=n, total=money.fmt(p.price_micro * n)),
+                         link_preview_options=NO_PREVIEW)
 
 
 @router.message(Buy.link, F.text)
@@ -93,12 +118,14 @@ async def got_address(message: Message, db: aiosqlite.Connection, catalog: Catal
         return
     data = await state.get_data()
     p = catalog.get(data.get("product_id", ""))
-    if not p or not p.enabled or not data.get("link"):
+    qty = data.get("qty")
+    if not p or not p.enabled or not data.get("link") or not isinstance(qty, int) \
+            or not catalog.min_qty <= qty <= catalog.max_qty:
         await state.clear()
         await message.answer(texts.get("error"), reply_markup=menu_keyboard(texts))
         return
     now = int(time.time())
-    oid = await orders.create(db, user_id=message.from_user.id, product=p, link=data["link"], from_addr=addr,
+    oid = await orders.create(db, user_id=message.from_user.id, product=p, quantity=qty, link=data["link"], from_addr=addr,
                               ttl_seconds=ttl_min * 60, now=now)
     await state.clear()
     if oid is None:
@@ -106,8 +133,8 @@ async def got_address(message: Message, db: aiosqlite.Connection, catalog: Catal
         return
     kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=texts.get("cancel_button"), callback_data=f"c:{oid}")]])
     await message.answer(
-        texts.get("order_created", id=oid, product=esc(p.name), link=esc(data["link"]), from_addr=addr,
-                  wallet=wallet, amount=money.fmt(p.price_micro), ttl=ttl_min, deadline=hhmm(now + ttl_min * 60)),
+        texts.get("order_created", id=oid, product=esc(p.name), qty=qty, link=esc(data["link"]), from_addr=addr,
+                  wallet=wallet, amount=money.fmt(p.price_micro * qty), ttl=ttl_min, deadline=hhmm(now + ttl_min * 60)),
         link_preview_options=NO_PREVIEW, reply_markup=kb,
     )
 
@@ -163,7 +190,7 @@ async def order_detail(cb: CallbackQuery, db: aiosqlite.Connection, texts: Texts
                  f"👛 보내는 주소: <code>{o['from_addr']}</code>\n⏰ 마감: {hhmm(o['expires_at'])}")
         kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=texts.get("cancel_button"), callback_data=f"c:{o['id']}")]])
     await cb.message.answer(
-        texts.get("order_detail", id=o["id"], product=esc(o["product_name"]), link=esc(o["link"]),
+        texts.get("order_detail", id=o["id"], product=esc(o["product_name"]), qty=o["quantity"], link=esc(o["link"]),
                   amount=money.fmt(o["amount_micro"]), status=STATUS_LABEL.get(o["status"], o["status"]), extra=extra),
         link_preview_options=NO_PREVIEW, reply_markup=kb,
     )

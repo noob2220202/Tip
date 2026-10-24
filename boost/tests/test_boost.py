@@ -98,9 +98,9 @@ async def env(make_cfg, bot, tg):
     cfg = make_cfg()
     db = await open_db(cfg.db_path, SCHEMA)
     catalog = Catalog((
-        Product("b10", "부스트 10개", 11, 10, money.to_micro("5"), 30),
-        Product("b30", "부스트 30개", 12, 30, money.to_micro("13.5"), 30),
-        Product("off", "준비 중", 0, 5, money.to_micro("1")),
+        Product("b10", "부스트 30일", 11, money.to_micro("0.5"), 30),
+        Product("b30", "부스트 7일", 12, money.to_micro("0.07"), 7),
+        Product("off", "준비 중", 0, money.to_micro("1")),
     ))
     tron = TronGrid(chain.base, "", WALLET)
     smm = SmmPanel(panel.url, "K")
@@ -131,8 +131,9 @@ async def press(e, uid, data):
     await e.dp.feed_update(e.bot, cb_update(uid, data))
 
 
-async def order_via_bot(e, uid, sender, product="b10", link="https://t.me/mychannel"):
+async def order_via_bot(e, uid, sender, product="b10", link="https://t.me/mychannel", qty=10):
     await press(e, uid, f"p:{product}")
+    await say(e, uid, str(qty))
     await say(e, uid, link)
     await say(e, uid, sender)
     async with e.db.execute("SELECT id FROM orders WHERE user_id=? ORDER BY id DESC LIMIT 1", (uid,)) as cur:
@@ -159,20 +160,15 @@ def test_addresses():
     assert addresses.parse_target("https://evil.com/t.me/x") is None and addresses.parse_target("안녕") is None
 
 
-def test_levels_and_bundle():
+def test_levels():
     r = levels.LevelRule()
     assert levels.boosts_required(1, 1000, r) == 3 and levels.boosts_required(9, 1000, r) == 35
     assert levels.boosts_required(10, 1000, r) == 50 and levels.boosts_required(10, 0, r) == 10
-    ps = [Product("a", "A", 1, 10, money.to_micro("5")), Product("b", "B", 1, 30, money.to_micro("13.5"))]
-    b = levels.best_bundle(ps, 35)
-    assert (b.boosts, b.cost_micro) == (40, money.to_micro("18.5"))   # 30개 + 10개
-    assert levels.best_bundle(ps, 60).cost_micro == money.to_micro("27")
-    assert levels.best_bundle(ps, levels.MAX_NEED + 1) is None
 
 
 def test_default_catalog_loads_and_ships_disabled():
     cat = load_catalog()
-    assert cat.products and cat.sellable() == []   # service_id 0 → 설정 전에는 아무것도 팔지 않는다
+    assert cat.products and (cat.min_qty, cat.max_qty) == (10, 1000)
 
 
 # ---------- 구매 흐름 ----------
@@ -182,8 +178,14 @@ async def test_purchase_flow_to_payment_info(env):
     assert "환영합니다" in env.tg.texts_to(7)[-1]
     await press(env, 7, "buy")
     last = env.tg.of("sendMessage")[-1]
-    assert "부스트 10개" in last["text"] and "준비 중" not in last["text"]       # 비활성 상품은 숨김
+    assert "부스트 30일" in last["text"] and "준비 중" not in last["text"]       # 비활성 상품은 숨김
+    assert "개당 <b>0.50 USDT</b>" in last["text"]
     await press(env, 7, "p:b10")
+    for bad in ("아무말", "9", "1001", "0", "-5", "10.5"):
+        await say(env, 7, bad)
+        assert "개수를 확인해 주십시오" in env.tg.texts_to(7)[-1], bad
+    await say(env, 7, "1,000")                                                 # 최대 개수는 허용
+    assert "합계 <b>500.00 USDT</b>" in env.tg.texts_to(7)[-1]
     await say(env, 7, "아무말")
     assert "링크를 확인할 수 없습니다" in env.tg.texts_to(7)[-1]
     await say(env, 7, "@mychannel")
@@ -193,9 +195,10 @@ async def test_purchase_flow_to_payment_info(env):
     assert "올바른 TRC20 주소가 아닙니다" in env.tg.texts_to(7)[-1]
     await say(env, 7, ALICE)
     txt = env.tg.texts_to(7)[-1]
-    assert WALLET in txt and "5.00" in txt and ALICE in txt and "https://t.me/mychannel" in txt
+    assert WALLET in txt and "500.00" in txt and "1000개" in txt and ALICE in txt and "https://t.me/mychannel" in txt
     o = await orders.get(env.db, 1)
-    assert (o["status"], o["amount_micro"], o["from_addr"], o["service_id"]) == ("awaiting_payment", 5_000_000, ALICE, 11)
+    assert (o["status"], o["amount_micro"], o["quantity"], o["from_addr"], o["service_id"]) == \
+        ("awaiting_payment", 500_000_000, 1000, ALICE, 11)
 
 
 async def test_disabled_product_cannot_be_ordered_and_open_limit(env):
@@ -231,6 +234,14 @@ async def test_payment_triggers_boost_once(env):
     await env.worker.tick(now=int(time.time()) + fulfil.STATUS_INTERVAL + 5)
     assert (await orders.get(env.db, oid))["status"] == "completed"
     assert any("완료되었습니다" in t for t in env.tg.texts_to(7))
+
+
+async def test_amount_is_unit_price_times_quantity(env):
+    oid = await order_via_bot(env, 7, ALICE, product="b30", qty=37)
+    assert (await orders.get(env.db, oid))["amount_micro"] == 2_590_000       # 0.07 × 37
+    env.chain.pay(ALICE, 2_590_000, "tx1")
+    await env.worker.tick()
+    assert env.panel.adds[0]["quantity"] == "37" and env.panel.adds[0]["service"] == "12"
 
 
 async def test_matching_rules(env):
@@ -365,8 +376,9 @@ async def test_calculator(env):
     await say(env, 7, "1,000")
     await say(env, 7, "20")
     txt = env.tg.texts_to(7)[-1]
-    assert "50개" in txt and "30개" in txt and "부스트 30개" in txt          # 필요 50 − 보유 20 = 30
-    assert "13.50 USDT" in txt
+    plain = txt.replace("<b>", "").replace("</b>", "")
+    assert "필요 부스트: 50개" in plain and "추가로 필요한 부스트: 30개" in plain     # 필요 50 − 보유 20
+    assert "가장 저렴한 구성" not in txt and "10개 ~ 1000개" in txt
 
     await say(env, 7, "/calc"); await say(env, 7, "0"); await say(env, 7, "10")
     assert "모두 채우셨습니다" in env.tg.texts_to(7)[-1]

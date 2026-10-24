@@ -54,7 +54,7 @@ OPEN_LIMIT = 3          # 사용자당 동시에 열어 둘 수 있는 입금 �
 CANCELLABLE = ("awaiting_payment",)
 
 
-async def create(db: aiosqlite.Connection, *, user_id: int, product, link: str, from_addr: str,
+async def create(db: aiosqlite.Connection, *, user_id: int, product, quantity: int, link: str, from_addr: str,
                  ttl_seconds: int, now: int | None = None) -> int | None:
     """주문을 만든다. 입금 대기 주문이 한도를 넘었으면 None."""
     now = int(now if now is not None else time.time())
@@ -67,8 +67,8 @@ async def create(db: aiosqlite.Connection, *, user_id: int, product, link: str, 
         """INSERT INTO orders (user_id, product_id, product_name, service_id, quantity, link, from_addr,
                                amount_micro, status, created_at, expires_at)
            VALUES (?,?,?,?,?,?,?,?, 'awaiting_payment', ?, ?)""",
-        (user_id, product.id, product.name, product.service_id, product.quantity, link, from_addr,
-         product.price_micro, now, now + ttl_seconds),
+        (user_id, product.id, product.name, product.service_id, quantity, link, from_addr,
+         product.price_micro * quantity, now, now + ttl_seconds),
     )
     await db.commit()
     return cur.lastrowid

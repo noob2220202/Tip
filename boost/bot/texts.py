@@ -9,7 +9,7 @@
 _HOW_TO = (
     "<b>📌 이용 방법</b>\n"
     "<blockquote>"
-    "1️⃣ <b>🚀 부스트 구매</b>를 눌러 상품을 선택합니다.\n"
+    "1️⃣ <b>🚀 부스트 구매</b>를 눌러 <b>유지 기간(상품)</b>을 선택하고, <b>구매할 개수</b>를 입력합니다.\n"
     "2️⃣ 부스트를 올릴 <b>그룹 또는 채널의 링크</b>를 보냅니다.\n"
     "3️⃣ 입금하실 때 사용할 <b>본인의 TRC20 지갑 주소</b>를 보냅니다.\n"
     "4️⃣ 안내해 드린 지갑으로 <b>정확한 금액의 USDT(TRC20)</b>를 보냅니다.\n"
@@ -72,8 +72,19 @@ TEXTS = {
         "🚀 <b>상품을 선택해 주십시오.</b>\n\n{list}\n\n"
         "<i>가격은 USDT(TRC20) 기준입니다.</i>",
     ],
+    "ask_qty": [
+        "📦 <b>{product}</b>을(를) 선택하셨습니다.\n"
+        "<blockquote>개당 <b>{unit} USDT</b></blockquote>\n"
+        "구매하실 <b>부스트 개수</b>를 숫자로 보내 주십시오.\n"
+        "<blockquote>최소 <b>{min}개</b> ~ 최대 <b>{max}개</b></blockquote>\n"
+        "취소하시려면 /cancel 을 입력해 주십시오.",
+    ],
+    "bad_qty": [
+        "❗ <b>개수를 확인해 주십시오.</b>\n"
+        "<b>{min}개 이상 {max}개 이하</b>의 숫자만 보내 주십시오. 예) <code>50</code>",
+    ],
     "ask_link": [
-        "🔗 <b>{product}</b>을(를) 선택하셨습니다.\n\n"
+        "🔗 <b>{product} × {qty}개</b> (합계 <b>{total} USDT</b>)\n\n"
         "부스트를 올릴 <b>그룹 또는 채널의 링크</b>를 보내 주십시오.\n"
         "<blockquote>예시\n<code>https://t.me/채널아이디</code>\n<code>@채널아이디</code>\n<code>https://t.me/+초대코드</code></blockquote>\n"
         "취소하시려면 /cancel 을 입력해 주십시오.",
@@ -97,7 +108,7 @@ TEXTS = {
     ],
     "order_created": [
         "🧾 <b>주문이 생성되었습니다. (#{id})</b>\n\n"
-        "<blockquote>📦 상품: <b>{product}</b>\n🔗 대상: {link}\n👛 보내는 주소: <code>{from_addr}</code></blockquote>\n"
+        "<blockquote>📦 상품: <b>{product}</b> × <b>{qty}개</b>\n🔗 대상: {link}\n👛 보내는 주소: <code>{from_addr}</code></blockquote>\n"
         "💳 <b>아래 지갑으로 정확히 입금해 주십시오.</b>\n"
         "<blockquote>네트워크: <b>TRON (TRC20)</b>\n코인: <b>USDT</b>\n"
         "받는 지갑: <code>{wallet}</code>\n"
@@ -114,7 +125,7 @@ TEXTS = {
     "orders_head": ["📋 <b>최근 주문 내역</b>\n\n{list}"],
     "order_detail": [
         "🧾 <b>주문 #{id}</b>\n\n"
-        "<blockquote>📦 {product}\n🔗 {link}\n💰 {amount} USDT\n📌 상태: <b>{status}</b></blockquote>{extra}",
+        "<blockquote>📦 {product} × {qty}개\n🔗 {link}\n💰 {amount} USDT\n📌 상태: <b>{status}</b></blockquote>{extra}",
     ],
     # 계산기
     "calc_ask_subs": [
@@ -134,19 +145,16 @@ TEXTS = {
         "🎯 {target}레벨 필요 부스트: <b>{need}개</b>\n"
         "🚀 현재 부스트: <b>{cur}개</b>\n"
         "➕ <u>추가로 필요한 부스트: <b>{left}개</b></u></blockquote>\n"
-        "{bundle}"
+        "{note}"
         "\n<i>※ 필요 개수는 현재 알려진 계산 방식 기준의 추정치입니다. 실제 수치는 채널의 부스트 화면에 표시되는 값이 우선합니다.</i>",
     ],
     "calc_reached": [
         "🎉 <b>이미 {target}레벨에 필요한 부스트({need}개)를 모두 채우셨습니다!</b>\n\n"
         "<blockquote>👥 구독자: <b>{subs}명</b>\n🚀 현재 부스트: <b>{cur}개</b></blockquote>",
     ],
-    "calc_bundle": [
-        "💡 <b>가장 저렴한 구성</b>\n<blockquote>{lines}\n"
-        "합계: <b>{boosts}개</b> · <b>{cost} USDT</b></blockquote>",
+    "calc_note": [
+        "💡 주문은 한 번에 <b>{min}개 ~ {max}개</b>까지 가능합니다. 더 필요하시면 나눠서 주문해 주십시오.\n",
     ],
-    "calc_no_bundle": ["💡 판매 중인 상품으로는 구성을 계산할 수 없습니다. 상품 목록을 확인해 주십시오.\n"],
-    "calc_too_big": ["💡 필요 개수가 너무 많아 상품 구성은 계산하지 않았습니다. 관리자에게 문의해 주십시오.\n"],
     "order_now_button": ["🚀 주문하러 가기"],
     # 알림
     "n_paid": [

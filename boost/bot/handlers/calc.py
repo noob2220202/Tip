@@ -9,9 +9,8 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
-from bot import levels, money
+from bot import levels
 from bot.catalog import Catalog
-from core.style import esc
 from core.texts import Texts
 
 router = Router(name="boost_calc")
@@ -69,18 +68,8 @@ async def got_current(message: Message, catalog: Catalog, texts: Texts, state: F
     if left == 0:
         await message.answer(texts.get("calc_reached", **common))
         return
-    products = catalog.sellable()
-    if left > levels.MAX_NEED:
-        bundle_text = texts.get("calc_too_big")
-    else:
-        b = levels.best_bundle(products, left)
-        if b is None:
-            bundle_text = texts.get("calc_no_bundle")
-        else:
-            lines = "\n".join(f"• {esc(p.name)} × <b>{n}</b>" for p, n in b.items)
-            bundle_text = texts.get("calc_bundle", lines=lines, boosts=f"{b.boosts:,}", cost=money.fmt(b.cost_micro))
     kb = None
-    if products:
+    if catalog.sellable():
         kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=texts.get("order_now_button"), callback_data="buy")]])
-    await message.answer(texts.get("calc_result", left=f"{left:,}", bundle=bundle_text + "\n" if bundle_text else "", **common),
-                         reply_markup=kb)
+    note = texts.get("calc_note", min=catalog.min_qty, max=catalog.max_qty)
+    await message.answer(texts.get("calc_result", left=f"{left:,}", note=note, **common), reply_markup=kb)

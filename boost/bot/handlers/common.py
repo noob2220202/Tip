@@ -30,5 +30,5 @@ def hhmm(ts: int) -> str:
 
 
 def order_line(o) -> str:
-    return (f"<b>#{o['id']}</b> {esc(o['product_name'])} · {money.fmt(o['amount_micro'])} USDT · "
+    return (f"<b>#{o['id']}</b> {esc(o['product_name'])} ×{o['quantity']} · {money.fmt(o['amount_micro'])} USDT · "
             f"{STATUS_LABEL.get(o['status'], o['status'])}")
