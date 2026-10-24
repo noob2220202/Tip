@@ -4,7 +4,7 @@ from __future__ import annotations
 import asyncio
 from pathlib import Path
 
-from bots.kakao_sticker_bot.kakao import KakaoClient, Session
+from bot.kakao import KakaoClient, Session
 from core.config import BotConfig
 
 DEFAULT_EMOJI = "😊"

@@ -1,51 +1,46 @@
-# Tip — 텔레그램 멀티봇
+# kakao — 카카오 이모티콘 → 텔레그램 스티커 봇
 
-한 대의 VPS에서 텔레그램 봇 여러 개를 pm2로 운영하는 Python 프로젝트입니다. 구조와 규칙은 [docs/PROJECT_SPEC.md](docs/PROJECT_SPEC.md), 문구 규칙은 [docs/STYLE_GUIDE.md](docs/STYLE_GUIDE.md)에 있습니다.
+카카오 이모티콘샵 링크를 붙여넣으면 텔레그램 스티커 세트로 만들어 주는 봇입니다. 세트 제목은 항상 `TIPㅣ이모티콘이름`입니다. 구조와 규칙은 [docs/PROJECT_SPEC.md](docs/PROJECT_SPEC.md), 문구 규칙은 [docs/STYLE_GUIDE.md](docs/STYLE_GUIDE.md)에 있습니다.
 
 - Python 3.11+ / aiogram 3 / aiosqlite, 롱폴링
 - Docker·venv 없이 시스템 Python에 직접 설치
-- 봇마다 DB 분리 (`bots/<이름>/data/bot.db`, WAL)
-
-## 봇 목록
-
-| 봇 | 하는 일 |
-|---|---|
-| `example_bot` | ping/echo. 게이트·등록·브로드캐스트 검증용 |
-| `kakao_sticker_bot` | 카카오 이모티콘샵 링크를 붙여넣으면 텔레그램 스티커 세트로 만들어 줌. 세트 제목은 항상 `TIPㅣ이모티콘이름` |
+- 서버는 전용 VPS. **프로젝트 하나 = `/root` 아래 폴더 하나** (이 프로젝트는 `/root/kakao`)
+- DB는 `data/bot.db` (WAL)
 
 ## 서버 배포
 
 ```bash
-# 서버 구조: /root/kakao 가 이 프로젝트 루트, 다른 프로젝트는 /root 아래 각자 폴더
 git clone -b ccr-40e8c943-gs8iqn https://github.com/noob2220202/Tip.git /root/kakao
 cd /root/kakao
 sudo bash scripts/setup_server.sh     # Python/pip/ffmpeg/sqlite3/Node/pm2, ufw, 스왑, 의존성
 pm2 startup                            # 출력되는 명령을 1회 실행
 
-cp config/common.example.toml config/common.toml    # 필수 채널 등 (없으면 기본값으로 동작)
-cp bots/kakao_sticker_bot/.env.example bots/kakao_sticker_bot/.env   # BOT_TOKEN, ADMIN_IDS 입력
-bash scripts/deploy.sh                 # pm2에 봇 등록·반영 + pm2 save
+cp .env.example .env                   # BOT_TOKEN, ADMIN_IDS 입력
+cp config/common.example.toml config/common.toml   # 필수 채널 등 (없으면 기본값으로 동작)
+
+# 카카오 로그인 (1회) — 아래 "카카오 세션 준비" 참고
+pip install --break-system-packages -r requirements-login.txt
+python3 -m playwright install --with-deps chromium
+python3 -m bot.login
+
+bash scripts/deploy.sh                 # pm2 앱 `kakao` 등록·시작 + pm2 save
 bash scripts/install_cron.sh           # 매일 04:10 DB 백업 (7일 보관)
 ```
 
-이후 업데이트는 `bash scripts/deploy.sh` 한 번이면 됩니다 (git pull → pip install → pm2 reload).
+이후 업데이트는 `bash scripts/deploy.sh` 한 번이면 됩니다 (git pull → pip install → pm2 reload). 로그는 `pm2 logs kakao`로 봅니다. 토큰이 없으면 시작하자마자 종료되고, 20번까지만 재시작합니다.
 
-`ecosystem.config.js`가 `bots/*/main.py`를 스캔해서 봇마다 pm2 앱을 만듭니다. 토큰이 없는 봇은 시작하자마자 종료되고, 20번까지만 재시작합니다.
+## 다른 봇 만들기
 
-## 새 봇 추가
+다른 봇은 이 폴더에 넣지 않고 `/root/<새봇>/`에서 따로 돌립니다.
 
-```bash
-python3 tools/new_bot.py my_bot       # bots/my_bot/ 템플릿 생성
-cp bots/my_bot/.env.example bots/my_bot/.env    # 토큰·관리자 ID 입력
-pm2 reload ecosystem.config.js
-```
-
-봇 폴더에는 `main.py`와 `handlers/`만 둡니다. 공통 기능은 `run_bot()` 한 줄로 붙습니다.
+1. `core/`, `config/`, `scripts/`, `ecosystem.config.js`, `requirements.txt`를 새 폴더로 복사합니다.
+2. `main.py`와 봇 코드를 새로 씁니다. 공통 기능은 한 줄로 붙습니다.
 
 ```python
-run_bot(Path(__file__).parent, routers=[router], texts=TEXTS,
-        schema=SCHEMA, on_startup=on_startup)   # schema, on_startup은 필요할 때만
+run_bot(ROOT, routers=[router], texts=TEXTS, schema=SCHEMA, on_startup=on_startup)   # schema, on_startup은 필요할 때만
 ```
+
+3. `.env`를 채우고 `ecosystem.config.js`의 앱 이름을 바꾼 뒤 `pm2 start ecosystem.config.js`.
 
 ## 공통 설정 (`config/common.toml`)
 
@@ -80,7 +75,7 @@ run_bot(Path(__file__).parent, routers=[router], texts=TEXTS,
 
 텔레그램은 노출·열람을 알려주지 않습니다. **노출은 측정할 수 없고, 대체 지표는 전달 성공 수입니다.** 리포트에는 발송 대상 / 전달 성공 / 차단·실패 / 전달률(성공 ÷ 대상)이 들어갑니다. 클릭도 추적하지 않습니다. 필요하면 광고주가 자기 쪽 UTM 링크로 따로 집계합니다.
 
-## 카카오 스티커 봇
+## 동작
 
 유저가 `e.kakao.com/t/…` 또는 `emoticon.kakao.com/items/…` 링크를 보내면:
 
@@ -102,14 +97,14 @@ run_bot(Path(__file__).parent, routers=[router], texts=TEXTS,
 ```bash
 pip install --break-system-packages -r requirements-login.txt
 python3 -m playwright install --with-deps chromium
-python3 -m bots.kakao_sticker_bot.login      # 프로젝트 루트에서 실행
+python3 -m bot.login      # 프로젝트 루트에서 실행
 ```
 
-터미널에 아이디, 비밀번호(입력이 화면에 보이지 않음), 필요하면 인증번호를 입력하면 `bots/kakao_sticker_bot/data/session.json`(권한 600)이 만들어집니다. 카카오톡 앱 "로그인 승인" 알림이 오는 계정이면 휴대폰에서 승인을 눌러주세요(최대 90초 대기). 화면 구조가 바뀌어 입력란을 못 찾으면 `[디버그]` 줄에 현재 input 목록이 찍힙니다.
+터미널에 아이디, 비밀번호(입력이 화면에 보이지 않음), 필요하면 인증번호를 입력하면 `data/session.json`(권한 600)이 만들어집니다. 카카오톡 앱 "로그인 승인" 알림이 오는 계정이면 휴대폰에서 승인을 눌러주세요(최대 90초 대기). 화면 구조가 바뀌어 입력란을 못 찾으면 `[디버그]` 줄에 현재 input 목록이 찍힙니다.
 
 GUI가 있는 PC에서 [kakaot](https://github.com/noob2220202/kakaot)의 `npm run login`으로 만든 `session.json`을 같은 위치에 복사해도 됩니다.
 
-경로를 바꾸려면 `.env`에 `KAKAO_SESSION_PATH`를 적습니다. 세션이 만료되면 로그인 스크립트를 다시 실행하면 되고, 봇 재시작은 필요 없습니다(요청마다 파일을 읽습니다). `session.json`에는 로그인 쿠키가 들어 있으니 커밋하지 마세요(`bots/*/data/`는 `.gitignore`).
+경로를 바꾸려면 `.env`에 `KAKAO_SESSION_PATH`를 적습니다. 세션이 만료되면 로그인 스크립트를 다시 실행하면 되고, 봇 재시작은 필요 없습니다(요청마다 파일을 읽습니다). `session.json`에는 로그인 쿠키가 들어 있으니 커밋하지 마세요(`data/`는 `.gitignore`).
 
 스티커마다 붙는 이모지는 `.env`의 `STICKER_EMOJI`(기본 😊)로 바꿀 수 있습니다.
 
@@ -122,4 +117,4 @@ pip install --break-system-packages -r requirements-dev.txt
 python3 -m pytest
 ```
 
-검증 항목: 게이트 차단/통과/재개, `/start` 등록, 관리자 전용 `/stats`, 브로드캐스트 발송(429/403/중복 방지), 재시작 후 이어보내기, `new_bot.py` 생성물과 `ecosystem.config.js` 스캔, 스티커 변환·세트 생성(50개 초과, 혼합 팩, 재사용, 세션 없음).
+검증 항목: 게이트 차단/통과/재개, `/start` 등록, 관리자 전용 `/stats`, 브로드캐스트 발송(429/403/중복 방지), 재시작 후 이어보내기, `ecosystem.config.js` 앱 정의, 스티커 변환·세트 생성(50개 초과, 혼합 팩, 재사용, 세션 없음).

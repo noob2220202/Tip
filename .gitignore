@@ -5,7 +5,7 @@ __pycache__/
 *.db
 *.db-wal
 *.db-shm
-bots/*/data/
+data/
 config/common.toml
 backups/
 node_modules/

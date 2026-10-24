@@ -1,6 +1,6 @@
-# 텔레그램 멀티봇 프로젝트 명세
+# 텔레그램 봇 프로젝트 명세
 
-하나의 VPS에서 텔레그램 봇 여러 개를 pm2로 운영하는 Python 프로젝트. 봇을 계속 추가할 예정이므로 **새 봇 추가가 쉬운 구조**가 핵심이다.
+전용 VPS에서 텔레그램 봇을 pm2로 운영하는 Python 프로젝트. **프로젝트 하나 = 봇 하나 = `/root` 아래 폴더 하나**다. 이 프로젝트는 `/root/kakao`이고, 다른 봇은 `/root/<다른봇>/`에 각자 만들어 거기서 돌린다. 공통 기능은 `core/`에 있고, 새 봇은 `core/`를 복사해 시작한다.
 
 문체·서식 규칙은 [STYLE_GUIDE.md](STYLE_GUIDE.md)에 따로 있다.
 
@@ -9,7 +9,8 @@
 - 클릭 추적은 **제외**한다. 추적 URL, 클릭 서버, CTR 지표는 만들지 않는다.
 - 봇이 AI로 만든 티가 나지 않도록 문체와 서식 규칙을 적용한다.
 - 진행 방식 1번(계획 보여주고 승인 후 구현)은 완료됐다. 구현 승인을 받았고 범위는 core 전체 + 카카오 스티커 봇이다.
-- 두 번째 봇으로 `kakao_sticker_bot`(카카오 이모티콘샵 링크 → 텔레그램 스티커 세트)을 추가했다. 세트 제목은 항상 `TIPㅣ이름`이다.
+- 이 프로젝트는 `kakao`(카카오 이모티콘샵 링크 → 텔레그램 스티커 세트) 봇 하나다. 세트 제목은 항상 `TIPㅣ이름`이다.
+- 한 저장소에 봇 여러 개를 두는 `bots/` 구조와 `tools/new_bot.py`는 없앴다. 봇마다 `/root` 아래 별도 폴더에서 동작한다.
 
 ## 제약
 
@@ -23,9 +24,18 @@
 ## 폴더 구조
 
 ```
-Tip/
-├── core/
-│   ├── config.py          # 공통 설정 로드 (common.toml + 봇 .env)
+/root/kakao/
+├── main.py                # run_bot(ROOT, routers=[...]) 한 줄로 공통 기능을 붙인다
+├── bot/                   # 이 봇 전용 코드
+│   ├── kakao.py           # 링크 파싱, 팩 조회, 세션 쿠키 (kakaot/server.js 포팅)
+│   ├── media.py           # WebP → WEBM(비디오 스티커) / 정적 스티커 변환 (Pillow + ffmpeg)
+│   ├── stickers.py        # 세트 이름·제목 규칙, 세트 생성
+│   ├── login.py           # 카카오 1회성 로그인 (session.json 생성)
+│   ├── services.py        # 시작 시 만드는 주입 객체
+│   ├── texts.py           # 이 봇의 말투 (core/texts.py 키를 덮어씀)
+│   └── handlers/convert.py
+├── core/                  # 공통 기능 (다른 봇에도 그대로 복사해 쓴다)
+│   ├── config.py          # 공통 설정 로드 (common.toml + .env)
 │   ├── bot_runner.py      # run_bot(): Bot/Dispatcher/미들웨어/라우터 조립 + 폴링 + 에러 핸들러
 │   ├── db.py              # aiosqlite 연결(WAL, busy_timeout), 마이그레이션
 │   ├── users.py           # 사용자 등록/조회/비활성 처리/통계
@@ -40,28 +50,18 @@ Tip/
 │       ├── sender.py      # 백그라운드 발송 워커 (레이트리밋, 429, 403, 재개)
 │       └── report.py      # /adstats, 텍스트 리포트 내보내기
 ├── config/
-│   ├── common.toml        # 필수 채널, 캐시 TTL, 게이트 fail 모드, 레이트리밋
+│   ├── common.toml        # 필수 채널, 캐시 TTL, 게이트 fail 모드, 레이트리밋 (gitignore)
 │   └── common.example.toml
-├── bots/
-│   ├── example_bot/       # 첫 번째 ping/echo 검증용 봇
-│   │   ├── .env.example   # BOT_TOKEN, ADMIN_IDS
-│   │   ├── main.py
-│   │   ├── texts.py
-│   │   ├── handlers/
-│   │   └── data/          # bot.db (gitignore)
-│   └── kakao_sticker_bot/ # 이모티콘샵 링크 → 텔레그램 스티커 세트
-│       ├── kakao.py       # 링크 파싱, 팩 조회, 세션 쿠키 (kakaot/server.js 포팅)
-│       ├── media.py       # WebP → WEBM(비디오 스티커) / 정적 스티커 변환 (Pillow + ffmpeg)
-│       ├── stickers.py    # 세트 이름·제목 규칙, 세트 생성
-│       └── handlers/convert.py
-├── tools/new_bot.py       # 봇 템플릿 생성기
+├── data/                  # bot.db, session.json (gitignore)
 ├── scripts/
 │   ├── setup_server.sh    # Python/pip/pm2/Node 설치, ufw, 스왑, 의존성 설치
 │   ├── deploy.sh          # git pull → pip install -r requirements.txt → pm2 reload
 │   ├── backup_db.sh       # sqlite3 .backup, 7일 보관
 │   └── install_cron.sh    # 일일 백업 cron 등록
-├── ecosystem.config.js    # bots/ 폴더를 스캔해 pm2 앱 목록 자동 생성
-├── requirements.txt       # 버전 고정
+├── tests/                 # 가짜 Bot API 서버 기반 자동 테스트
+├── ecosystem.config.js    # pm2 앱 `kakao` 하나
+├── .env.example           # BOT_TOKEN, ADMIN_IDS, KAKAO_SESSION_PATH, STICKER_EMOJI
+├── requirements.txt       # 버전 고정 (+ requirements-login.txt, requirements-dev.txt)
 ├── docs/
 │   ├── PROJECT_SPEC.md
 │   └── STYLE_GUIDE.md
@@ -69,13 +69,11 @@ Tip/
 └── README.md
 ```
 
-### 새 봇 추가 흐름
+### 다른 봇을 만들 때
 
-1. `python3 tools/new_bot.py <이름>`으로 `bots/<이름>/` 템플릿을 생성한다 (`.env.example`, `main.py`, `handlers`).
-2. `.env`에 토큰과 관리자 ID를 적는다.
-3. `pm2 reload ecosystem.config.js` (또는 `scripts/deploy.sh`)로 반영한다.
-
-봇 폴더에는 `main.py`와 `handlers/`만 두고, 공통 기능은 `core.run_bot(bot_dir, routers=[...])` 한 줄로 붙인다.
+1. `/root/<새봇>/`을 만들고 이 프로젝트의 `core/`, `config/`, `scripts/`, `ecosystem.config.js`, `requirements.txt`를 복사한다.
+2. 봇 코드(`bot/`)와 `main.py`를 새로 쓴다. 공통 기능은 `run_bot(ROOT, routers=[...])` 한 줄로 붙는다.
+3. `.env`에 토큰과 관리자 ID를 적고 `pm2 start ecosystem.config.js` (앱 이름은 봇마다 겹치지 않게 바꾼다).
 
 ## core 기능
 
@@ -136,7 +134,7 @@ Tip/
 - 광고주에게 전달할 수 있도록 캠페인 리포트를 텍스트로 내보내는 기능
 - README에 "노출은 측정 불가하고, 대체 지표는 전달 성공 수"라고 명시한다. 클릭도 측정하지 않으며, 필요하면 광고주가 자기 쪽 UTM 링크로 따로 집계한다는 점도 적는다.
 
-## DB 스키마 (봇별 `bots/<name>/data/bot.db`)
+## DB 스키마 (`data/bot.db`)
 
 모든 DB는 `PRAGMA journal_mode=WAL; synchronous=NORMAL; busy_timeout=5000; foreign_keys=ON`을 쓴다.
 
@@ -179,7 +177,7 @@ CREATE INDEX idx_recip_pending ON campaign_recipients(campaign_id, status);
 
 ## 운영
 
-- **pm2**: 봇별 앱 등록, 자동 재시작, 메모리 초과 시 재시작(`max_memory_restart`), pm2-logrotate, `pm2 startup` + `pm2 save`. `ecosystem.config.js`가 `bots/*/main.py`를 스캔해 앱을 만든다. 새 봇 폴더만 만들면 `pm2 reload`로 반영된다.
+- **pm2**: 봇별 앱 등록, 자동 재시작, 메모리 초과 시 재시작(`max_memory_restart`), pm2-logrotate, `pm2 startup` + `pm2 save`. `ecosystem.config.js`는 이 폴더의 `main.py` 하나를 앱으로 등록한다.
 - **scripts/setup_server.sh**: Python/pip/pm2/Node 설치, ufw 방화벽, 스왑, 의존성 설치
 - **scripts/deploy.sh**: git pull → `pip install -r requirements.txt` → pm2 reload
 - **SQLite 백업**: 매일 cron으로 각 봇 DB를 `sqlite3 .backup`으로 복사하고 7일치를 보관한다.
@@ -188,20 +186,20 @@ CREATE INDEX idx_recip_pending ON campaign_recipients(campaign_id, status);
 ## 진행 방식
 
 1. 폴더 구조, 주요 테이블 스키마, 구현 계획을 보여주고 승인 후 구현한다. (계획 제시 완료, 구현 승인 대기)
-2. 첫 번째로 ping/echo 수준의 템플릿 봇을 만들어 게이트, 사용자 등록, 브로드캐스트가 실제로 동작하는지 검증한다. 실제 텔레그램은 쓸 수 없으므로 로컬 가짜 Bot API 서버(aiohttp 목)에 aiogram을 연결해 자동 테스트한다.
+2. 게이트, 사용자 등록, 브로드캐스트가 실제로 동작하는지 검증한다. 실제 텔레그램은 쓸 수 없으므로 로컬 가짜 Bot API 서버(aiohttp 목)에 aiogram을 연결해 자동 테스트한다.
    - 게이트 차단/통과
    - 사용자 등록
    - 브로드캐스트 발송과 429/403 처리
    - 재시작 후 이어보내기
-   - `new_bot.py`가 만든 봇 구동과 `ecosystem.config.js` 자동 스캔
-3. 완료 후 README에 서버 배포 절차, 새 봇 추가 방법, 광고 발송 방법을 정리한다.
+   - `ecosystem.config.js` 앱 정의
+3. 완료 후 README에 서버 배포 절차, 다른 봇 만드는 방법, 광고 발송 방법을 정리한다.
 
 ### 구현 순서
 
 1. 골격: `requirements.txt`, `.gitignore`, `core/config`, `db`, `logging`, `users`
 2. 구독 게이트 + `run_bot` + 관리자 `/stats`
 3. 브로드캐스트(플로우, 발송 워커, 재개) + 리포트
-4. `example_bot` + `tools/new_bot.py` + `ecosystem.config.js`
+4. 봇 코드(`bot/`, `main.py`) + `ecosystem.config.js`
 5. 운영 스크립트(`setup_server.sh`, `deploy.sh`, `backup_db.sh`, cron)
 6. 자동 테스트로 검증
 7. README 작성

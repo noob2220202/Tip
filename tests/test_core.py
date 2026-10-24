@@ -1,12 +1,11 @@
 import json
 import subprocess
-import sys
 from pathlib import Path
 
-from aiogram.types import Update
+from aiogram import Router
+from aiogram.filters import Command
+from aiogram.types import Message, Update
 
-from bots.example_bot.handlers import router as example_router
-from bots.example_bot.texts import TEXTS as EXAMPLE_TEXTS
 from core import users
 from core.bot_runner import assemble
 from core.broadcast import models
@@ -18,6 +17,15 @@ from tests.conftest import ADMIN, cb_update, msg_update
 
 CH = Channel(chat_id="@chan", url="https://t.me/chan", title="채널")
 ROOT = Path(__file__).resolve().parent.parent
+
+
+EXAMPLE_TEXTS = {"pong": ["퐁"]}
+example_router = Router(name="test_ping")
+
+
+@example_router.message(Command("ping"))
+async def _ping(message: Message, texts: Texts) -> None:
+    await message.answer(texts.get("pong"))
 
 
 async def build(cfg, bot, db):
@@ -164,20 +172,12 @@ def test_token_mask():
     assert "AAAA" not in rec.getMessage() and "<token>" in rec.getMessage()
 
 
-def test_new_bot_and_ecosystem_scan():
-    name = "tmp_gen_bot"
-    d = ROOT / "bots" / name
-    try:
-        r = subprocess.run([sys.executable, "tools/new_bot.py", name], cwd=ROOT, capture_output=True, text=True)
-        assert r.returncode == 0, r.stdout
-        assert (d / "main.py").exists() and (d / ".env.example").exists()
-        # 생성된 봇 모듈이 import되고 /ping에 반응하는 라우터를 갖는다
-        r = subprocess.run([sys.executable, "-c", f"import bots.{name}.main, bots.{name}.handlers as h; print(h.router.name)"],
-                           cwd=ROOT, capture_output=True, text=True)
-        assert r.returncode == 0 and name in r.stdout, r.stderr
-        out = subprocess.run(["node", "-e", "console.log(JSON.stringify(require('./ecosystem.config.js').apps.map(a=>a.name)))"],
-                             cwd=ROOT, capture_output=True, text=True)
-        assert name in out.stdout and "example_bot" in out.stdout
-    finally:
-        import shutil
-        shutil.rmtree(d, ignore_errors=True)
+def test_ecosystem_config():
+    out = subprocess.run(
+        ["node", "-e", "console.log(JSON.stringify(require('./ecosystem.config.js').apps))"],
+        cwd=ROOT, capture_output=True, text=True,
+    )
+    apps = json.loads(out.stdout)
+    assert [a["name"] for a in apps] == ["kakao"]
+    assert apps[0]["script"] == "main.py" and apps[0]["interpreter"] == "python3"
+    assert (ROOT / apps[0]["script"]).exists()

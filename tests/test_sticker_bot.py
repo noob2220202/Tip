@@ -6,12 +6,12 @@ import pytest
 from aiohttp import web
 from PIL import Image, ImageDraw
 
-from bots.kakao_sticker_bot import kakao, stickers
-from bots.kakao_sticker_bot.handlers import router
-from bots.kakao_sticker_bot.kakao import KakaoClient, Session
-from bots.kakao_sticker_bot.main import SCHEMA
-from bots.kakao_sticker_bot.services import on_startup
-from bots.kakao_sticker_bot.texts import TEXTS
+from bot import kakao, stickers
+from bot.handlers import router
+from bot.kakao import KakaoClient, Session
+from main import SCHEMA
+from bot.services import on_startup
+from bot.texts import TEXTS
 from core.bot_runner import assemble
 from core.db import open_db
 from core.texts import Texts
@@ -186,7 +186,7 @@ async def test_partial_failure_skips_bad_image(make_cfg, bot, tg, kk, session_fi
 
 
 def test_login_url_detection():
-    from bots.kakao_sticker_bot.login import is_logged_in_url
+    from bot.login import is_logged_in_url
 
     assert is_logged_in_url("https://e.kakao.com/")
     assert not is_logged_in_url("https://accounts.kakao.com/login?continue=x")

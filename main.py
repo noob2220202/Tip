@@ -1,8 +1,8 @@
 from pathlib import Path
 
-from bots.kakao_sticker_bot.handlers import router
-from bots.kakao_sticker_bot.services import on_startup
-from bots.kakao_sticker_bot.texts import TEXTS
+from bot.handlers import router
+from bot.services import on_startup
+from bot.texts import TEXTS
 from core import run_bot
 
 SCHEMA = """
@@ -20,4 +20,4 @@ CREATE TABLE IF NOT EXISTS sticker_sets (
 """
 
 if __name__ == "__main__":
-    run_bot(Path(__file__).parent, routers=[router], texts=TEXTS, schema=SCHEMA, on_startup=on_startup)
+    run_bot(Path(__file__).resolve().parent, routers=[router], texts=TEXTS, schema=SCHEMA, on_startup=on_startup)

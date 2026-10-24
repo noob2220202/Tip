@@ -3,7 +3,7 @@
 터미널에 아이디/비밀번호(+필요 시 인증번호)를 입력하면 headless 브라우저가 로그인하고,
 세션(쿠키)을 session.json으로 저장한다. 봇은 이 파일을 요청마다 읽어서 재사용한다.
 
-사용: python3 -m bots.kakao_sticker_bot.login      (프로젝트 루트에서)
+사용: python3 -m bot.login      (프로젝트 루트에서)
 설치: pip install --break-system-packages -r requirements-login.txt && python3 -m playwright install chromium
 """
 from __future__ import annotations
@@ -17,7 +17,7 @@ from pathlib import Path
 
 from dotenv import dotenv_values
 
-BOT_DIR = Path(__file__).resolve().parent
+ROOT = Path(__file__).resolve().parent.parent
 LOGIN_URL = "https://accounts.kakao.com/login?continue=https%3A%2F%2Fe.kakao.com%2F"
 USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) "
@@ -33,8 +33,8 @@ ERROR_SELECTORS = ['[class*="error"]:visible', '[class*="msg_error"]:visible', '
 
 
 def session_path() -> Path:
-    env = dotenv_values(BOT_DIR / ".env")
-    return Path(env.get("KAKAO_SESSION_PATH") or BOT_DIR / "data" / "session.json")
+    env = dotenv_values(ROOT / ".env")
+    return Path(env.get("KAKAO_SESSION_PATH") or ROOT / "data" / "session.json")
 
 
 def is_logged_in_url(url: str) -> bool:

@@ -10,8 +10,8 @@ from aiogram import F, Router
 from aiogram.exceptions import TelegramAPIError
 from aiogram.types import Message
 
-from bots.kakao_sticker_bot import media, stickers
-from bots.kakao_sticker_bot.kakao import KakaoClient, KakaoError, Pack, Session, parse_link
+from bot import media, stickers
+from bot.kakao import KakaoClient, KakaoError, Pack, Session, parse_link
 from core.config import BotConfig
 from core.style import esc
 from core.texts import Texts
