@@ -1,6 +1,7 @@
 """구독 게이트: 필수 채널에 모두 가입해야 봇을 쓸 수 있다."""
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 from typing import Any, Awaitable, Callable
@@ -19,11 +20,11 @@ from aiogram.types import (
 from core import users
 from core.config import BotConfig, Channel
 from core.texts import Texts
+from core.verifier import VerifierClient, VerifierError, channel_problems, is_joined
 
 log = logging.getLogger(__name__)
 
 CHECK_DATA = "gate:check"
-JOINED = {"creator", "administrator", "member"}
 
 
 class SubscriptionGate(BaseMiddleware):
@@ -38,24 +39,46 @@ class SubscriptionGate(BaseMiddleware):
         self._ok_cache: dict[tuple[int, str | int], float] = {}
         # 게이트에 막힌 마지막 메시지. 가입 확인을 통과하면 이어서 처리한다.
         self._pending: dict[int, Update] = {}
+        self.verifier = make_verifier(cfg)
+
+    def _cached_ok(self, user_id: int, ch: Channel) -> bool:
+        return time.monotonic() - self._ok_cache.get((user_id, ch.chat_id), -1e9) < self.cfg.common.cache_ttl
 
     async def _is_member(self, bot: Bot, user_id: int, ch: Channel) -> bool:
-        key = (user_id, ch.chat_id)
-        now = time.monotonic()
-        if now - self._ok_cache.get(key, -1e9) < self.cfg.common.cache_ttl:
-            return True
+        """검수 서비스를 쓰지 않을 때: 이 봇이 직접 getChatMember로 확인한다."""
         try:
             m = await bot.get_chat_member(ch.chat_id, user_id)
         except TelegramAPIError as e:
             log.warning("getChatMember 실패 chat=%s: %s", ch.chat_id, e)
             return self.cfg.common.fail_mode == "allow"
-        joined = m.status in JOINED or (m.status == "restricted" and getattr(m, "is_member", False))
-        if joined:
-            self._ok_cache[key] = now
-        return joined
+        return is_joined(m)
 
     async def missing(self, bot: Bot, user_id: int) -> list[Channel]:
-        return [ch for ch in self.cfg.common.channels if not await self._is_member(bot, user_id, ch)]
+        todo = [ch for ch in self.cfg.common.channels if not self._cached_ok(user_id, ch)]
+        if not todo:
+            return []
+        block = self.cfg.common.fail_mode == "block"
+        out: list[Channel] = []
+        if self.verifier is not None:
+            try:
+                res = await self.verifier.check(user_id)
+            except VerifierError as e:
+                log.error("%s", e)
+                return todo if block else []
+            gone, failed = set(res.get("missing", [])), set(res.get("errors", []))
+            for ch in todo:
+                cid = str(ch.chat_id)
+                if cid in gone or (cid in failed and block):
+                    out.append(ch)
+                elif cid not in failed:
+                    self._ok_cache[(user_id, ch.chat_id)] = time.monotonic()
+            return out
+        for ch in todo:
+            if await self._is_member(bot, user_id, ch):
+                self._ok_cache[(user_id, ch.chat_id)] = time.monotonic()
+            else:
+                out.append(ch)
+        return out
 
     def _keyboard(self, missing: list[Channel]) -> InlineKeyboardMarkup:
         rows = [[InlineKeyboardButton(text=ch.title or str(ch.chat_id), url=ch.url)] for ch in missing]
@@ -125,21 +148,28 @@ class SubscriptionGate(BaseMiddleware):
             await self.dp.feed_update(bot, pending)
 
 
-async def self_check(bot: Bot, cfg: BotConfig) -> list[str]:
-    """봇이 필수 채널의 관리자인지 점검한다. 관리자가 아니면 가입 여부를 확인할 수 없다.
+def make_verifier(cfg: BotConfig) -> VerifierClient | None:
+    if not cfg.common.verifier_url or not cfg.common.channels:
+        return None
+    return VerifierClient(cfg.common.verifier_url, cfg.env.get("VERIFY_SECRET", ""))
 
-    문제가 있는 채널마다 사람이 읽을 수 있는 설명을 돌려준다 (없으면 빈 리스트).
+
+async def self_check(bot: Bot, cfg: BotConfig, direct: bool = False) -> list[str]:
+    """필수 채널 설정이 동작하는지 점검한다. 문제가 있는 항목마다 설명을 돌려준다(없으면 빈 리스트).
+
+    검수 서비스를 쓰면 검수 봇이 채널 관리자인지를 서비스에 물어본다. 검수 봇은 시작 직후라
+    아직 안 떠 있을 수 있어서 몇 번 재시도한다. direct=True면 이 봇 자신을 점검한다(검수 봇용).
     """
-    problems: list[str] = []
     if not cfg.common.channels:
-        return problems
-    me = await bot.me()
-    for ch in cfg.common.channels:
+        return []
+    verifier = None if direct else make_verifier(cfg)
+    if verifier is None:
+        return await channel_problems(bot, cfg.common.channels)
+    err = ""
+    for _ in range(5):
         try:
-            m = await bot.get_chat_member(ch.chat_id, me.id)
-        except TelegramAPIError as e:
-            problems.append(f"{ch.chat_id}: 채널을 조회할 수 없습니다 ({e}). 채널 주소와 봇 초대 여부를 확인해 주십시오.")
-            continue
-        if m.status not in ("administrator", "creator"):
-            problems.append(f"{ch.chat_id}: 봇이 관리자가 아닙니다(현재 {m.status}). 채널 관리자로 추가해 주십시오.")
-    return problems
+            return await verifier.health()
+        except VerifierError as e:
+            err = str(e)
+            await asyncio.sleep(3)
+    return [f"검수 서비스: {err}. 검수 봇이 실행 중인지, 이 봇의 .env에 VERIFY_SECRET이 검수 봇과 같게 들어 있는지 확인해 주십시오."]

@@ -11,6 +11,7 @@
 - 진행 방식 1번(계획 보여주고 승인 후 구현)은 완료됐다. 구현 승인을 받았고 범위는 core 전체 + 카카오 스티커 봇이다.
 - 첫 봇은 `kakao`(카카오 이모티콘샵 링크 → 텔레그램 스티커 세트)다. 세트 제목은 항상 `TIPㅣ이름`이다.
 - 봇마다 core를 복사하던 방식을 없애고 `shared/` 통합 폴더로 합쳤다. `bots/` 구조와 `tools/new_bot.py`는 없다. 새 봇은 `kakao/`를 참고해 `Tip/<봇>/` 폴더로 만든다.
+- 채널 가입 확인은 **검수 봇(`verify`)** 이 맡는다. 채널 관리자는 검수 봇 하나이고, 다른 봇은 같은 서버의 `127.0.0.1` 검수 서비스에 가입 여부를 물어본다(`gate.verifier_url`). 서비스는 `VERIFY_SECRET` 헤더로 인증한다.
 - 필수 채널 가입 확인이 실패하면 기본값을 차단(`block`)으로 둔다. 봇은 시작할 때 채널 관리자 여부를 점검해 관리자에게 알린다.
 - 이미 만든 스티커 세트는 카카오에 접속하지 않고 바로 돌려준다(사용자 간 공유, 이미지 목록 해시로 링크 형태 차이 흡수).
 
@@ -34,6 +35,7 @@ Tip/                            # 저장소 (서버: /root/Tip)
 │   │   ├── db.py               # aiosqlite 연결(WAL, busy_timeout), 마이그레이션
 │   │   ├── users.py            # 사용자 등록/조회/비활성 처리/통계
 │   │   ├── subscription.py     # 구독 게이트 미들웨어 + 캐시 + 시작 점검(self_check)
+│   │   ├── verifier.py         # 검수 서비스: 서버(검수 봇) + 클라이언트(다른 봇의 게이트)
 │   │   ├── admin.py            # AdminFilter, /stats, /campaigns
 │   │   ├── style.py            # 서식 헬퍼 (HTML parse mode)
 │   │   ├── texts.py            # 공통 안내문
@@ -53,6 +55,11 @@ Tip/                            # 저장소 (서버: /root/Tip)
 │   ├── .env.example            # BOT_TOKEN, ADMIN_IDS, KAKAO_SESSION_PATH, STICKER_EMOJI
 │   ├── ecosystem.config.js     # pm2 앱 `kakao`
 │   └── requirements.txt, requirements-login.txt
+├── verify/                     # 봇: 채널 가입 검수 (채널 관리자, 서버: /root/verify 링크)
+│   ├── main.py                 # 검수 서비스(127.0.0.1:VERIFY_PORT)를 띄움, 자기 자신에겐 게이트 없음
+│   ├── bot/                    # /start, /help, 관리자용 /channels, /check
+│   ├── .env.example            # BOT_TOKEN, ADMIN_IDS, VERIFY_SECRET, VERIFY_PORT
+│   └── ecosystem.config.js     # pm2 앱 `verify`
 ├── scripts/
 │   ├── setup_server.sh         # Python/pip/pm2/Node/ffmpeg 설치, ufw, 스왑, 의존성 설치
 │   ├── link_bots.sh            # /root/<봇> -> Tip/<봇> 링크
@@ -189,6 +196,7 @@ CREATE INDEX idx_recip_pending ON campaign_recipients(campaign_id, status);
    - 브로드캐스트 발송과 429/403 처리
    - 재시작 후 이어보내기
    - 필수 채널 시작 점검(관리자 권한 부족 감지)
+   - 검수 서비스: 비밀값 인증, 가입/미가입/확인 실패 구분, 서비스 장애 시 fail_mode 적용
    - `ecosystem.config.js` 앱 정의
 3. 완료 후 README에 서버 배포 절차, 새 봇 추가 방법, 광고 발송 방법을 정리한다.
 

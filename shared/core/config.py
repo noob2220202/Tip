@@ -25,6 +25,7 @@ class CommonConfig:
     fail_mode: str = "allow"
     exempt_admins: bool = True
     rate_per_sec: int = 25
+    verifier_url: str | None = None   # 검수 서비스 주소. 있으면 가입 확인을 검수 봇에 맡긴다
 
 
 @dataclass(frozen=True)
@@ -63,6 +64,7 @@ def load_common(path: Path | None = None) -> CommonConfig:
         fail_mode=fail_mode,
         exempt_admins=bool(gate.get("exempt_admins", True)),
         rate_per_sec=int(data.get("broadcast", {}).get("rate_per_sec", 25)),
+        verifier_url=gate.get("verifier_url") or None,
     )
 
 

@@ -66,15 +66,17 @@ async def assemble(
     routers: Iterable[Router],
     texts: Texts,
     data: Mapping[str, Any] | None = None,
+    gate_enabled: bool = True,
 ) -> tuple[Dispatcher, CampaignSender]:
     """Dispatcher를 조립한다. 테스트에서도 같은 경로를 쓴다."""
     dp = Dispatcher(storage=MemoryStorage())
     sender = CampaignSender(bot, db, texts, cfg.common.rate_per_sec)
     dp.workflow_data.update(db=db, cfg=cfg, texts=texts, sender=sender, **(data or {}))
 
-    gate = SubscriptionGate(cfg, db, texts)
-    gate.dp = dp
-    dp.update.outer_middleware(gate)
+    if gate_enabled:
+        gate = SubscriptionGate(cfg, db, texts)
+        gate.dp = dp
+        dp.update.outer_middleware(gate)
 
     dp.include_router(admin.build_router(cfg.admin_ids))
     dp.include_router(flow.build_router(cfg.admin_ids))
@@ -97,9 +99,9 @@ async def assemble(
     return dp, sender
 
 
-async def _warn_gate_problems(bot: Bot, cfg: BotConfig, texts: Texts) -> None:
+async def _warn_gate_problems(bot: Bot, cfg: BotConfig, texts: Texts, direct: bool) -> None:
     """필수 채널 점검에서 문제가 나오면 로그에 남기고 관리자에게 알린다."""
-    problems = await self_check(bot, cfg)
+    problems = await self_check(bot, cfg, direct=direct)
     if not problems:
         return
     for p in problems:
@@ -119,6 +121,7 @@ async def _main(
     schema: str,
     data: Mapping[str, Any] | None,
     on_startup: Callable[[Bot, Any, BotConfig], Awaitable[Mapping[str, Any] | None]] | None,
+    gate: bool,
 ) -> None:
     cfg = load_bot_config(bot_dir)
     db = await open_db(cfg.db_path, schema)
@@ -127,14 +130,18 @@ async def _main(
     extra = dict(data or {})
     if on_startup:
         extra.update(await on_startup(bot, db, cfg) or {})
-    dp, sender = await assemble(cfg, bot, db, routers, texts, extra)
+    dp, sender = await assemble(cfg, bot, db, routers, texts, extra, gate_enabled=gate)
+    check_task = None
     try:
         me = await bot.get_me()
         log.info("%s 시작 (@%s)", cfg.name, me.username)
-        await _warn_gate_problems(bot, cfg, texts)
+        # 검수 봇이 아직 안 떠 있을 수 있어 재시도하므로 폴링을 막지 않게 백그라운드로 돌린다
+        check_task = asyncio.create_task(_warn_gate_problems(bot, cfg, texts, direct=not gate))
         await sender.resume_all()
         await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())
     finally:
+        if check_task:
+            check_task.cancel()
         await sender.stop()
         await bot.session.close()
         await db.close()
@@ -147,6 +154,7 @@ def run_bot(
     schema: str = "",
     data: Mapping[str, Any] | None = None,
     on_startup: Callable[[Bot, Any, BotConfig], Awaitable[Mapping[str, Any] | None]] | None = None,
+    gate: bool = True,
 ) -> None:
     """봇 폴더의 main.py에서 이 한 줄로 공통 기능을 붙인다.
 
@@ -154,9 +162,10 @@ def run_bot(
     schema: 봇 전용 테이블 SQL (매 시작마다 실행되므로 IF NOT EXISTS로 작성)
     data: 핸들러에 키워드 인자로 주입할 값
     on_startup: (bot, db, cfg)를 받아 추가 주입값 dict를 돌려주는 async 훅
+    gate: False면 채널 가입 게이트를 붙이지 않는다 (검수 봇 자신용)
     """
     setup_logging()
     try:
-        asyncio.run(_main(Path(bot_dir), routers, texts, schema, data, on_startup))
+        asyncio.run(_main(Path(bot_dir), routers, texts, schema, data, on_startup, gate))
     except (KeyboardInterrupt, SystemExit):
         pass

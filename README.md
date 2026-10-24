@@ -14,12 +14,14 @@ Tip/                        ← 저장소 (서버에서는 /root/Tip)
 │   ├── testkit/            #   테스트용 가짜 Bot API 서버와 pytest 픽스처
 │   └── tests/
 ├── kakao/                  ← 봇: 카카오 이모티콘 → 텔레그램 스티커  (자세한 설명: kakao/README.md)
+├── verify/                 ← 봇: 채널 가입 검수 전용 (채널 관리자는 이 봇 하나)
 ├── scripts/                ← 서버 운영 스크립트 (전체 봇 대상)
 └── docs/
 
 /root/                      ← 서버에서 봇마다 링크로 연결
 ├── Tip/
 ├── kakao -> /root/Tip/kakao
+├── verify -> /root/Tip/verify
 └── 다른봇 -> /root/Tip/다른봇
 ```
 
@@ -32,8 +34,9 @@ sudo bash scripts/setup_server.sh      # Python/pip/ffmpeg/sqlite3/Node/pm2, ufw
 pm2 startup                             # 출력되는 명령을 1회 실행
 bash scripts/link_bots.sh               # /root/kakao -> /root/Tip/kakao 링크 생성
 
-cd /root/kakao
-cp .env.example .env && nano .env       # BOT_TOKEN, ADMIN_IDS
+# 검수 봇(verify)을 먼저 설정한다 — 아래 "채널 가입 검수 봇" 참고
+cd /root/verify && cp .env.example .env && nano .env     # BOT_TOKEN, ADMIN_IDS, VERIFY_SECRET
+cd /root/kakao  && cp .env.example .env && nano .env     # BOT_TOKEN, ADMIN_IDS, VERIFY_SECRET(verify와 같은 값)
 # 카카오 로그인(1회)은 kakao/README.md 참고
 
 cd /root/Tip
@@ -51,6 +54,27 @@ bash scripts/install_cron.sh            # 매일 04:10 DB 백업 (7일 보관)
 | `scripts/backup_db.sh` | 봇별 `data/bot.db`를 `<봇>/backups/`에 백업, 7일 보관 |
 | `scripts/install_cron.sh` | 일일 백업 cron 등록 |
 
+## 채널 가입 검수 봇
+
+필수 채널(`@GGULLTIP`)에 가입했는지는 **검수 봇(`verify`) 하나**가 확인합니다. 다른 봇들은 같은 서버의 `127.0.0.1`로 "이 유저가 가입했나?"만 물어봅니다. 그래서 채널 관리자는 검수 봇 하나이고, 새 봇을 만들어도 채널에 추가할 필요가 없습니다. (텔레그램 Bot API는 채널 전체 멤버 목록을 주지 않아서, 목록과 비교하지 않고 유저 한 명씩 `getChatMember`로 확인합니다.)
+
+```
+사용자 → kakao 봇 ──(127.0.0.1, 비밀값)──▶ verify 봇 ──getChatMember──▶ 텔레그램 채널
+```
+
+설정 순서:
+
+1. BotFather에서 검수용 새 봇을 만들고 토큰을 받습니다.
+2. **그 봇을 `@GGULLTIP` 채널의 관리자로 추가합니다.** (권한은 기본값이면 충분합니다.)
+3. 비밀값을 만들어 `verify/.env`와 각 봇 `.env`의 `VERIFY_SECRET`에 **같은 값**으로 넣습니다.
+   ```bash
+   python3 -c "import secrets; print(secrets.token_urlsafe(32))"
+   ```
+4. `verify/.env`의 `VERIFY_PORT`(기본 8765)는 `shared/config/common.toml`의 `verifier_url` 포트와 같아야 합니다.
+5. `bash scripts/deploy.sh` 후 검수 봇에게 `/channels`를 보내 `정상입니다`가 나오는지 확인합니다.
+
+검수 서비스는 `127.0.0.1`에만 열리고 비밀값이 없으면 `401`로 거절합니다. 검수 봇이 죽어 있거나 응답이 오류면 `fail_mode`(현재 `block`)에 따라 차단되고, 봇이 시작할 때 관리자에게 DM으로 알립니다. 관리자 명령은 `/channels`(권한 점검), `/check 사용자ID`(채널별 가입 여부)입니다. `verifier_url`을 지우면 각 봇이 직접 확인하는 방식으로 돌아가며, 이때는 모든 봇이 채널 관리자여야 합니다.
+
 ## 새 봇 추가
 
 봇은 `Tip/` 안의 폴더 하나입니다. `kakao/`를 참고해서 만듭니다.
@@ -62,7 +86,7 @@ bash scripts/install_cron.sh            # 매일 04:10 DB 백업 (7일 보관)
 run_bot(ROOT, routers=[router], texts=TEXTS, schema=SCHEMA, on_startup=on_startup)   # schema, on_startup은 필요할 때만
 ```
 
-3. `.env`를 채우고 `bash scripts/link_bots.sh && bash scripts/deploy.sh`.
+3. `.env`를 채우고(`VERIFY_SECRET` 포함) `bash scripts/link_bots.sh && bash scripts/deploy.sh`. 채널 가입 확인은 `run_bot()`이 알아서 검수 봇에 맡기므로 채널 설정은 필요 없습니다.
 
 `ecosystem.config.js`의 앱 `name`은 봇마다 겹치지 않게 합니다.
 
@@ -74,11 +98,12 @@ run_bot(ROOT, routers=[router], texts=TEXTS, schema=SCHEMA, on_startup=on_startu
 |---|---|
 | `gate.channels` | 필수 가입 채널. `chat_id`(`@이름` 또는 숫자), `url`(가입 링크), `title` |
 | `gate.cache_ttl` | 가입 확인 결과 캐시 시간(초). 기본 60 |
+| `gate.verifier_url` | 검수 서비스 주소(`http://127.0.0.1:8765`). 지우면 각 봇이 직접 확인 |
 | `gate.fail_mode` | `getChatMember` 오류 시 `allow`(통과) 또는 `block`(차단). 현재 `block` |
 | `gate.exempt_admins` | 관리자는 게이트 면제. 기본 true |
 | `broadcast.rate_per_sec` | 초당 발송 상한. 기본 25 |
 
-**봇이 필수 채널의 관리자로 추가되어 있어야** `getChatMember`가 동작합니다. 봇이 시작할 때 이를 점검하고, 문제가 있으면 로그와 관리자 DM으로 알립니다. 관리자(`ADMIN_IDS`)는 게이트를 면제하므로 가입 안내를 확인하려면 일반 계정으로 시험하세요. 비공개 채널은 `chat_id`에 숫자(`-100…`)를, `url`에 초대 링크를 적습니다.
+**검수 봇이 필수 채널의 관리자로 추가되어 있어야** `getChatMember`가 동작합니다. 봇이 시작할 때 이를 점검하고, 문제가 있으면 로그와 관리자 DM으로 알립니다. 관리자(`ADMIN_IDS`)는 게이트를 면제하므로 가입 안내를 확인하려면 일반 계정으로 시험하세요. 비공개 채널은 `chat_id`에 숫자(`-100…`)를, `url`에 초대 링크를 적습니다.
 
 ## 관리자 명령 (`.env`의 `ADMIN_IDS`만)
 
@@ -109,4 +134,5 @@ run_bot(ROOT, routers=[router], texts=TEXTS, schema=SCHEMA, on_startup=on_startu
 pip install --break-system-packages -r shared/requirements-dev.txt
 (cd shared && python3 -m pytest)    # 게이트, 브로드캐스트, 재개, 설정
 (cd kakao  && python3 -m pytest)    # 스티커 봇
+(cd verify && python3 -m pytest)    # 검수 봇
 ```

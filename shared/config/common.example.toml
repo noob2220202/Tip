@@ -4,11 +4,16 @@
 # 멤버십 확인 결과(가입 확인 통과)를 캐시하는 시간(초)
 cache_ttl = 60
 # getChatMember 호출이 실패했을 때: "allow"(통과) | "block"(차단)
-fail_mode = "allow"
+fail_mode = "block"
 # 관리자(.env의 ADMIN_IDS)는 게이트를 건너뛴다
 exempt_admins = true
 
-# 필수 채널. 봇이 각 채널의 관리자여야 getChatMember가 동작한다.
+# 가입 확인을 검수 봇(verify)에게 맡길 때 그 서비스 주소. 같은 서버의 127.0.0.1에서만 열린다.
+# 검수 봇만 채널 관리자면 되고, 이 값이 없으면 각 봇이 직접 확인하므로 모든 봇이 채널 관리자여야 한다.
+# 포트는 verify/.env의 VERIFY_PORT와 같아야 하고, 각 봇 .env에는 VERIFY_SECRET이 필요하다.
+verifier_url = "http://127.0.0.1:8765"
+
+# 필수 채널. 검수 봇(또는 verifier_url이 없을 때는 각 봇)이 채널 관리자여야 getChatMember가 동작한다.
 # 비공개 채널은 chat_id에 숫자(-100...)를, url에 초대 링크를 적는다.
 # [[gate.channels]]
 # chat_id = "@example_channel"
