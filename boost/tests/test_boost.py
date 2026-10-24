@@ -198,7 +198,7 @@ async def test_purchase_flow_to_payment_info(env):
     await say(env, 7, "T-bad")
     assert "올바른 TRC20 주소가 아닙니다" in env.tg.texts_to(7)[-1]
     await say(env, 7, WALLET)                                                  # 우리 지갑을 보내는 주소로 쓸 수 없다
-    assert "올바른 TRC20 주소가 아닙니다" in env.tg.texts_to(7)[-1]
+    assert "입금받는 지갑과 같은 주소" in env.tg.texts_to(7)[-1]
     await say(env, 7, ALICE)
     txt = env.tg.texts_to(7)[-1]
     assert WALLET in txt and "500.00" in txt and "1000개" in txt and ALICE in txt and "https://t.me/mychannel" in txt

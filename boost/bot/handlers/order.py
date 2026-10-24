@@ -114,7 +114,7 @@ async def got_address(message: Message, db: aiosqlite.Connection, catalog: Catal
         await message.answer(texts.get("bad_addr"))
         return
     if addr == wallet:
-        await message.answer(texts.get("bad_addr"))
+        await message.answer(texts.get("same_as_wallet"))
         return
     data = await state.get_data()
     p = catalog.get(data.get("product_id", ""))
