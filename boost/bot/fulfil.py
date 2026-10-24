@@ -23,6 +23,11 @@ DONE = {"completed"}
 FAILED = {"canceled", "cancelled", "refunded", "fail", "failed", "partial"}
 
 
+def panel_link(link: str) -> str:
+    """패널에는 부스트 주문임을 알리는 `?boost`를 링크 끝에 붙여 보낸다 (DB에는 사용자가 보낸 링크 그대로 둔다)."""
+    return link if link.endswith("?boost") else f"{link}?boost"
+
+
 async def recover(db: aiosqlite.Connection) -> int:
     """재시작 직후: 패널 호출 도중이던(submitting) 주문은 접수 여부를 알 수 없으니 사람이 확인하게 둔다."""
     cur = await db.execute(
@@ -42,7 +47,7 @@ async def fulfil_due(db: aiosqlite.Connection, panel: SmmPanel, now: int | None 
         if not await orders.transition(db, o["id"], "paid", "submitting"):
             continue
         try:
-            panel_id = await panel.add(o["service_id"], o["link"], o["quantity"])
+            panel_id = await panel.add(o["service_id"], panel_link(o["link"]), o["quantity"])
         except PanelRejected as e:
             attempts = o["attempts"] + 1
             if attempts >= MAX_ATTEMPTS:

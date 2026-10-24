@@ -156,7 +156,8 @@ def test_addresses():
     assert not addresses.is_tron_address("0x" + "a" * 40) and not addresses.is_tron_address("T123")
     assert addresses.parse_target("@my_channel") == "https://t.me/my_channel"
     assert addresses.parse_target("보자 https://t.me/my_channel?boost") == "https://t.me/my_channel"
-    assert addresses.parse_target("t.me/+AbCdEf123456") == "https://t.me/+AbCdEf123456"
+    assert addresses.parse_target("t.me/+AbCdEf123456") is None                 # 초대 링크는 받지 않는다
+    assert addresses.parse_target("https://t.me/joinchat/AbCdEf123456") is None
     assert addresses.parse_target("https://evil.com/t.me/x") is None and addresses.parse_target("안녕") is None
 
 
@@ -188,6 +189,9 @@ async def test_purchase_flow_to_payment_info(env):
         assert "개수를 확인해 주십시오" in env.tg.texts_to(7)[-1], bad
     await say(env, 7, "1,000")                                                 # 최대 개수는 허용
     assert "합계 <b>500.00 USDT</b>" in env.tg.texts_to(7)[-1]
+    assert "필독 사항" in env.tg.texts_to(7)[-3] or any("필독 사항" in t for t in env.tg.texts_to(7))
+    await say(env, 7, "https://t.me/+AbCdEf123456")                            # 초대 링크는 거절
+    assert "링크를 확인할 수 없습니다" in env.tg.texts_to(7)[-1]
     await say(env, 7, "아무말")
     assert "링크를 확인할 수 없습니다" in env.tg.texts_to(7)[-1]
     await say(env, 7, "@mychannel")
@@ -222,7 +226,7 @@ async def test_payment_triggers_boost_once(env):
 
     env.chain.pay(ALICE, 5_000_000, "tx1")
     await env.worker.tick()
-    assert env.panel.adds == [{"key": "K", "action": "add", "service": "11", "link": "https://t.me/mychannel", "quantity": "10"}]
+    assert env.panel.adds == [{"key": "K", "action": "add", "service": "11", "link": "https://t.me/mychannel?boost", "quantity": "10"}]
     o = await orders.get(env.db, oid)
     assert (o["status"], o["txid"], o["panel_order_id"]) == ("processing", "tx1", "7001")
     texts = env.tg.texts_to(7)
@@ -244,6 +248,11 @@ async def test_amount_is_unit_price_times_quantity(env):
     env.chain.pay(ALICE, 2_590_000, "tx1")
     await env.worker.tick()
     assert env.panel.adds[0]["quantity"] == "37" and env.panel.adds[0]["service"] == "12"
+
+
+def test_panel_link_gets_boost_suffix():
+    assert fulfil.panel_link("https://t.me/sacojb") == "https://t.me/sacojb?boost"
+    assert fulfil.panel_link("https://t.me/sacojb?boost") == "https://t.me/sacojb?boost"
 
 
 async def test_matching_rules(env):
