@@ -191,3 +191,41 @@ def test_login_url_detection():
     assert is_logged_in_url("https://e.kakao.com/")
     assert not is_logged_in_url("https://accounts.kakao.com/login?continue=x")
     assert not is_logged_in_url("https://example.com/kakao.com/")
+
+
+async def test_login_hint_is_not_error():
+    """'TIP ...' 안내 문구는 로그인 에러로 취급하지 않는다."""
+    import http.server
+    import threading
+
+    from playwright.async_api import async_playwright
+
+    from bot import login
+
+    html = b'<html><body><p class="txt_error">TIP hint</p><p class="txt_error">wrong password</p></body></html>'
+    only_hint = b'<html><body><p class="txt_error">TIP hint</p></body></html>'
+    pages = {"/a": html, "/b": only_hint}
+
+    class H(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(200); self.send_header("Content-Type", "text/html"); self.end_headers()
+            self.wfile.write(pages[self.path])
+        def log_message(self, *a): pass
+
+    srv = http.server.HTTPServer(("127.0.0.1", 0), H)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    try:
+        async with async_playwright() as pw:
+            b = await pw.chromium.launch(executable_path="/opt/pw-browsers/chromium")
+            pg = await b.new_page()
+            await pg.goto(f"http://127.0.0.1:{srv.server_port}/b")
+            assert await login.error_text(pg) == ""
+            await pg.goto(f"http://127.0.0.1:{srv.server_port}/a")
+            assert await login.error_text(pg) == "wrong password"
+            await b.close()
+    except Exception as e:  # noqa: BLE001
+        if "Executable doesn't exist" in str(e) or "executable" in str(e).lower():
+            pytest.skip("브라우저를 쓸 수 없는 환경")
+        raise
+    finally:
+        srv.shutdown()

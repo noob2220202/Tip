@@ -77,15 +77,29 @@ async def any_visible(page, selectors) -> bool:
 
 async def error_text(page) -> str:
     for sel in ERROR_SELECTORS:
-        loc = page.locator(sel).first
-        if await _visible(loc):
+        try:
+            locs = await page.locator(sel).all()
+        except Exception:  # noqa: BLE001
+            continue
+        for loc in locs:
+            if not await _visible(loc):
+                continue
             try:
                 text = (await loc.inner_text()).strip()
             except Exception:  # noqa: BLE001
                 continue
-            if text:
+            if text and not text.startswith("TIP"):   # "TIP ..."은 입력 안내 문구
                 return text
     return ""
+
+
+async def dump_text(page) -> None:
+    """실패 원인을 알 수 있게 화면에 보이는 글자를 일부 출력한다."""
+    try:
+        body = (await page.inner_text("body")).strip()
+        print(f"[디버그] 화면 글자: {' '.join(body.split())[:400]}")
+    except Exception:  # noqa: BLE001
+        pass
 
 
 async def settle(page) -> None:
@@ -183,18 +197,19 @@ async def run(out: Path) -> int:
                     await settle(page)
 
             ok = is_logged_in_url(page.url)
-            if ok:
-                print("\n로그인에 성공했어요.")
-            else:
-                print("\n자동으로 로그인 완료를 확인하지 못했어요. 그래도 현재 세션을 저장해 둘게요.")
-                print("위 [디버그] 로그를 보고, 움직이는 이모티콘이 안 받아지면 다시 시도해 주세요.")
+            if not ok:
+                await dump_text(page)
+                print("\n로그인 완료를 확인하지 못했어요. 로그인 안 된 세션이 봇에 쓰이면 안 돼서 저장하지 않았어요.")
+                print("승인 알림/인증번호를 놓쳤다면 다시 실행해 주세요.")
+                return 1
 
+            print("\n로그인에 성공했어요.")
             state = await context.storage_state()
             out.parent.mkdir(parents=True, exist_ok=True)
             out.write_text(json.dumps(state, ensure_ascii=False, indent=2), "utf8")
             out.chmod(0o600)  # 로그인 쿠키가 들어 있다
             print(f"세션을 저장했어요 -> {out}")
-            return 0 if ok else 1
+            return 0
         finally:
             await browser.close()
 
