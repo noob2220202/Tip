@@ -1,6 +1,8 @@
 import io
 import json
 import re
+import subprocess
+from pathlib import Path
 
 import pytest
 from aiohttp import web
@@ -15,8 +17,10 @@ from bot.texts import TEXTS
 from core.bot_runner import assemble
 from core.db import open_db
 from core.texts import Texts
-from tests.conftest import ADMIN, msg_update
-from tests.fake_api import BOT_USERNAME
+from testkit.fixtures import ADMIN, msg_update
+from testkit.fake_api import BOT_USERNAME
+
+KAKAO = Path(__file__).resolve().parent.parent
 
 
 def anim_webp(n=6, ms=200) -> bytes:
@@ -41,6 +45,7 @@ class FakeKakao:
 
     def __init__(self):
         self.packs = {}   # key -> (title, [bytes...])
+        self.alias = {}   # 다른 링크 형태: alias key -> 원래 key (같은 이미지 URL을 돌려준다)
         self.hits = 0
 
     async def start(self):
@@ -56,11 +61,12 @@ class FakeKakao:
         self.hits += 1
         key = req.match_info["key"]
         self.last_cookie = req.headers.get("Cookie")
-        if key not in self.packs:
+        if self.alias.get(key, key) not in self.packs:
             return web.json_response({"status": 404}, status=404)
-        title, imgs = self.packs[key]
+        real = self.alias.get(key, key)
+        title, imgs = self.packs[real]
         return web.json_response({"hero": {"title": title}, "contents": {"items": [
-            {"animatedUrl": f"{self.base}/img/{key}/{i}"} for i in range(len(imgs))]}})
+            {"animatedUrl": f"{self.base}/img/{real}/{i}"} for i in range(len(imgs))]}})
 
     async def img(self, req):
         _, imgs = self.packs[req.match_info["key"]]
@@ -340,10 +346,76 @@ async def test_channel_gate_shows_join_and_check_buttons_then_resumes(make_cfg, 
     assert kb[1][0] == {"text": "✅ 가입을 완료했습니다", "callback_data": "gate:check"}
     assert not tg.sets                                            # 가입 전에는 변환하지 않는다
 
-    from tests.conftest import cb_update
+    from testkit.fixtures import cb_update
     await dp.feed_update(bot, cb_update(31, "gate:check"))        # 아직 미가입
     assert not tg.sets
     tg.members[("@GGULLTIP", 31)] = "member"
     await dp.feed_update(bot, cb_update(31, "gate:check"))        # 가입 후 확인 → 처음 요청을 이어서 처리
     assert f"tip_31_gate_by_{BOT_USERNAME}" in tg.sets
+    await db.close()
+
+
+def test_ecosystem_config():
+    out = subprocess.run(
+        ["node", "-e", "console.log(JSON.stringify(require('./ecosystem.config.js').apps))"],
+        cwd=KAKAO, capture_output=True, text=True,
+    )
+    apps = json.loads(out.stdout)
+    assert [a["name"] for a in apps] == ["kakao"]
+    assert apps[0]["script"] == "main.py" and apps[0]["interpreter"] == "python3"
+    assert (KAKAO / apps[0]["script"]).exists()
+
+
+
+
+async def test_existing_set_is_returned_immediately_without_calling_kakao(make_cfg, bot, tg, kk, session_file):
+    kk.packs["p"] = ("팩", [anim_webp()])
+    dp, db, _ = await make_bot(make_cfg, bot, kk, session_file)
+    await dp.feed_update(bot, msg_update(41, "https://e.kakao.com/t/p"))
+    hits, creates = kk.hits, len(tg.of("createNewStickerSet"))
+    before = len(tg.of("sendMessage"))
+    await dp.feed_update(bot, msg_update(41, "https://e.kakao.com/t/p"))
+    assert kk.hits == hits                                        # 카카오에 다시 접속하지 않는다
+    assert len(tg.of("createNewStickerSet")) == creates           # 새로 만들지 않는다
+    assert len(tg.of("sendMessage")) == before + 1                # 확인 중 메시지 없이 답 하나로 끝
+    assert "이미 변환해 두신" in tg.texts_to(41)[-1]
+    await db.close()
+
+
+async def test_other_users_get_the_existing_set(make_cfg, bot, tg, kk, session_file):
+    kk.packs["shared"] = ("공유", [anim_webp()])
+    dp, db, _ = await make_bot(make_cfg, bot, kk, session_file)
+    await dp.feed_update(bot, msg_update(51, "https://e.kakao.com/t/shared"))
+    name = f"tip_51_shared_by_{BOT_USERNAME}"
+    await dp.feed_update(bot, msg_update(52, "https://e.kakao.com/t/shared"))
+    assert len(tg.of("createNewStickerSet")) == 1
+    assert f"https://t.me/addstickers/{name}" in tg.texts_to(52)[-1]
+    await db.close()
+
+
+async def test_same_emoticon_with_different_link_form_is_recognized(make_cfg, bot, tg, kk, session_file):
+    kk.packs["pigeon"] = ("비둘기", [anim_webp(), anim_webp(8)])
+    kk.alias["AbC123"] = "pigeon"                                 # emoticon.kakao.com/items/AbC123 형태
+    dp, db, _ = await make_bot(make_cfg, bot, kk, session_file)
+    await dp.feed_update(bot, msg_update(61, "https://e.kakao.com/t/pigeon"))
+    await dp.feed_update(bot, msg_update(61, "https://emoticon.kakao.com/items/AbC123"))
+    assert len(tg.of("createNewStickerSet")) == 1
+    assert "이미 변환해 두신" in tg.texts_to(61)[-1]
+    await db.close()
+
+
+async def test_migration_adds_fingerprint_to_old_db(make_cfg, tmp_path):
+    import aiosqlite
+
+    from bot.services import migrate
+
+    db = await aiosqlite.connect(tmp_path / "old.db")
+    db.row_factory = aiosqlite.Row
+    await db.execute("CREATE TABLE sticker_sets (user_id INTEGER, key TEXT, set_name TEXT, title TEXT, fmt TEXT, "
+                     "total INTEGER, status TEXT, created_at INTEGER, PRIMARY KEY (user_id, key))")
+    await db.execute("INSERT INTO sticker_sets VALUES (1,'k','n','t','video',3,'complete',0)")
+    await migrate(db)
+    await migrate(db)                                             # 두 번 실행해도 안전
+    async with db.execute("SELECT fingerprint FROM sticker_sets") as c:
+        assert (await c.fetchone())[0] is None
     await db.close()

@@ -3,8 +3,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-LINE="10 4 * * * bash $ROOT/scripts/backup_db.sh >> $ROOT/backups/backup.log 2>&1"
+LINE="10 4 * * * bash $ROOT/scripts/backup_db.sh >> $ROOT/backup.log 2>&1"
 
-mkdir -p "$ROOT/backups"
 ( crontab -l 2>/dev/null | grep -vF "scripts/backup_db.sh" || true; echo "$LINE" ) | crontab -
 echo "등록했어요: $LINE"

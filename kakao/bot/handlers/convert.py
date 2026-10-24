@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
 import time
 
@@ -55,6 +56,25 @@ def _url(name: str) -> str:
     return f"https://t.me/addstickers/{name}"
 
 
+async def _find_existing(bot, db, user_id: int, *, key: str | None = None, fingerprint: str | None = None):
+    """이미 만들어 둔 세트를 찾는다. 다른 사용자가 만든 것도 재사용하고, 텔레그램에 실제로 남아 있는 것만 인정한다."""
+    column, value = ("key", key) if key is not None else ("fingerprint", fingerprint)
+    async with db.execute(
+        f"SELECT * FROM sticker_sets WHERE status='complete' AND {column}=? "
+        "ORDER BY (user_id=?) DESC, created_at DESC LIMIT 5",
+        (value, user_id),
+    ) as cur:
+        rows = await cur.fetchall()
+    for row in rows:
+        if await stickers.set_exists(bot, row["set_name"]):
+            return row
+    return None
+
+
+def _reuse_text(texts: Texts, row) -> str:
+    return texts.get("reuse", title=esc(row["title"]), count=row["total"], url=_url(row["set_name"]))
+
+
 async def _convert_all(
     kakao: KakaoClient, urls: list[str], fmt: str, sem: asyncio.Semaphore, progress: Progress, texts: Texts
 ) -> list[bytes | None]:
@@ -105,6 +125,13 @@ async def _handle(message, db, cfg, texts, kakao, sem, emoji, alert_state) -> No
     user_id = message.from_user.id
     key = parse_link(message.text)
     bot = message.bot
+
+    # 이미 만든 이모티콘이면 카카오에 접속하지 않고 바로 링크를 준다
+    row = await _find_existing(bot, db, user_id, key=key)
+    if row:
+        await message.answer(_reuse_text(texts, row))
+        return
+
     progress = Progress(await message.answer(texts.get("fetching")))
 
     try:
@@ -131,13 +158,11 @@ async def _handle(message, db, cfg, texts, kakao, sem, emoji, alert_state) -> No
     set_name = stickers.make_set_name(user_id, key, me.username)
     title = stickers.make_title(pack.title)
 
-    # 이미 만든 세트면 링크만 다시 준다
-    async with db.execute("SELECT * FROM sticker_sets WHERE user_id=? AND key=?", (user_id, key)) as cur:
-        row = await cur.fetchone()
-    if row and row["status"] == "complete" and await stickers.set_exists(bot, row["set_name"]):
-        await progress.set(
-            texts.get("reuse", title=esc(row["title"]), count=row["total"], url=_url(row["set_name"])), force=True
-        )
+    # 링크 형태가 달라도(e.kakao.com/t/… 와 emoticon.kakao.com/items/…) 같은 이모티콘이면 이미지 목록이 같다
+    fingerprint = hashlib.sha1((fmt + "\n" + "\n".join(urls)).encode()).hexdigest()
+    row = await _find_existing(bot, db, user_id, fingerprint=fingerprint)
+    if row:
+        await progress.set(_reuse_text(texts, row), force=True)
         return
     # 중간에 끊겼거나 사용자가 지운 흔적은 정리하고 처음부터 다시 만든다
     if await stickers.set_exists(bot, set_name):
@@ -154,9 +179,9 @@ async def _handle(message, db, cfg, texts, kakao, sem, emoji, alert_state) -> No
 
     await progress.set(texts.get("uploading"), force=True)
     await db.execute(
-        """INSERT OR REPLACE INTO sticker_sets (user_id, key, set_name, title, fmt, total, status, created_at)
-           VALUES (?, ?, ?, ?, ?, ?, 'creating', ?)""",
-        (user_id, key, set_name, title, fmt, len(files), int(time.time())),
+        """INSERT OR REPLACE INTO sticker_sets (user_id, key, set_name, title, fmt, fingerprint, total, status, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, 'creating', ?)""",
+        (user_id, key, set_name, title, fmt, fingerprint, len(files), int(time.time())),
     )
     await db.commit()
     try:

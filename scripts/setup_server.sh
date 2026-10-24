@@ -12,8 +12,12 @@ apt-get install -y python3 python3-pip sqlite3 ffmpeg ufw curl git cron nodejs n
 npm install -g pm2
 pm2 install pm2-logrotate
 
-# 시스템 Python에 직접 설치 (venv/Docker 사용 안 함)
-pip install --break-system-packages -r "$ROOT/requirements.txt"
+# 시스템 Python에 직접 설치 (venv/Docker 사용 안 함): 통합 폴더 + 각 봇 의존성
+pip install --break-system-packages -r "$ROOT/shared/requirements.txt"
+for req in "$ROOT"/*/requirements.txt; do
+  [ "$(basename "$(dirname "$req")")" = "shared" ] && continue
+  pip install --break-system-packages -r "$req"
+done
 
 # 방화벽: SSH만 연다 (봇은 롱폴링이라 인바운드 포트가 필요 없다)
 ufw allow OpenSSH
@@ -28,4 +32,4 @@ if ! swapon --show | grep -q .; then
   grep -q '^/swapfile' /etc/fstab || echo '/swapfile none swap sw 0 0' >> /etc/fstab
 fi
 
-echo "끝났어요. 다음: pm2 startup 이 알려주는 명령을 한 번 실행하고, 봇 .env를 채운 뒤 scripts/deploy.sh"
+echo "끝났어요. 다음: pm2 startup 이 알려주는 명령을 한 번 실행하고, bash scripts/link_bots.sh 후 봇별 .env를 채운 뒤 scripts/deploy.sh"

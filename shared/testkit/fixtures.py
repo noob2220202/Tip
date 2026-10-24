@@ -1,9 +1,7 @@
+"""봇들이 같이 쓰는 pytest 픽스처. 각 프로젝트의 conftest.py가 pytest_plugins로 불러온다."""
 from __future__ import annotations
 
 import io
-import sys
-from pathlib import Path
-
 import pytest
 from aiogram import Bot
 from aiogram.client.default import DefaultBotProperties
@@ -11,12 +9,10 @@ from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.client.telegram import TelegramAPIServer
 from aiogram.types import Update
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-
-from core.config import BotConfig, Channel, CommonConfig  # noqa: E402
-from core.db import open_db  # noqa: E402
-from core.texts import Texts  # noqa: E402
-from tests.fake_api import FakeTelegram  # noqa: E402
+from core.config import BotConfig, Channel, CommonConfig  
+from core.db import open_db  
+from core.texts import Texts  
+from testkit.fake_api import FakeTelegram  
 
 ADMIN = 900
 TOKEN = "123456:" + "A" * 35

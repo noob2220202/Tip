@@ -1,4 +1,4 @@
-// 이 프로젝트의 봇 하나를 pm2로 실행한다. 다른 봇은 /root 아래 별도 폴더에서 각자 돌린다.
+// 이 폴더의 봇 하나를 pm2로 실행한다. 공통 코드는 ../shared(통합 폴더)에서 불러온다.
 const path = require("path");
 
 const root = __dirname;
@@ -10,7 +10,7 @@ module.exports = {
       script: "main.py",
       interpreter: "python3",
       cwd: root,
-      env: { PYTHONPATH: root, PYTHONUNBUFFERED: "1" },
+      env: { PYTHONPATH: [root, path.join(root, "..", "shared")].join(path.delimiter), PYTHONUNBUFFERED: "1" },
       autorestart: true,
       max_memory_restart: "400M",
       // 시작 직후 계속 죽으면(토큰 누락 등) 무한 재시작하지 않도록 한다

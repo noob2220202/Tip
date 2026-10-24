@@ -22,7 +22,7 @@ from core.config import BotConfig, load_bot_config
 from core.db import open_db
 from core.logging_setup import setup_logging
 from core.style import esc
-from core.subscription import SubscriptionGate
+from core.subscription import SubscriptionGate, self_check
 from core.texts import Texts
 
 log = logging.getLogger(__name__)
@@ -97,6 +97,21 @@ async def assemble(
     return dp, sender
 
 
+async def _warn_gate_problems(bot: Bot, cfg: BotConfig, texts: Texts) -> None:
+    """필수 채널 점검에서 문제가 나오면 로그에 남기고 관리자에게 알린다."""
+    problems = await self_check(bot, cfg)
+    if not problems:
+        return
+    for p in problems:
+        log.error("필수 채널 점검 실패: %s", p)
+    text = texts.get("gate_selfcheck_failed", problems="\n".join(f"• {esc(p)}" for p in problems), mode=cfg.common.fail_mode)
+    for admin_id in cfg.admin_ids:
+        try:
+            await bot.send_message(admin_id, text)
+        except Exception:  # noqa: BLE001 - 알림이 실패해도 봇은 떠야 한다
+            log.warning("관리자 %s에게 점검 결과를 보내지 못했습니다", admin_id)
+
+
 async def _main(
     bot_dir: Path,
     routers: Sequence[Router],
@@ -116,6 +131,7 @@ async def _main(
     try:
         me = await bot.get_me()
         log.info("%s 시작 (@%s)", cfg.name, me.username)
+        await _warn_gate_problems(bot, cfg, texts)
         await sender.resume_all()
         await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())
     finally:

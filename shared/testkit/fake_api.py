@@ -88,8 +88,15 @@ class FakeTelegram:
             return self._ok(True)
         if method == "getChatMember":
             status = self.members.get((str(p["chat_id"]), int(p["user_id"])), "left")
-            return self._ok({"status": status, "user": {"id": int(p["user_id"]), "is_bot": False, "first_name": "u"},
-                             **({"is_member": True} if status == "restricted" else {})})
+            member = {"status": status, "user": {"id": int(p["user_id"]), "is_bot": False, "first_name": "u"}}
+            if status == "restricted":
+                member["is_member"] = True
+            if status == "administrator":   # 규격상 필수인 권한 필드를 모두 채운다
+                from aiogram.types import ChatMemberAdministrator
+
+                member.update({n: True for n, f in ChatMemberAdministrator.model_fields.items()
+                               if f.is_required() and n not in ("status", "user")})
+            return self._ok(member)
         if method in ("sendMessage", "sendPhoto", "sendVideo", "sendDocument"):
             uid = int(p["chat_id"])
             if uid in self.retry_once:

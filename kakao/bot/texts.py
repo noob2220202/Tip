@@ -122,6 +122,12 @@ TEXTS = {
         "아래 채널 <b>{count}곳</b>에 가입하신 후, <u>가입 완료</u> 버튼을 눌러 주십시오. "
         "확인이 끝나면 요청하신 작업을 바로 이어서 진행합니다. 🙏",
     ],
+    "gate_selfcheck_failed": [
+        "🚨 <b>필수 채널 점검에서 문제가 발견되었습니다.</b>\n\n"
+        "<blockquote>{problems}</blockquote>\n"
+        "⚙️ 현재 설정: 가입 확인에 실패하면 <b>{mode}</b>\n"
+        "봇을 채널의 <u>관리자</u>로 추가한 뒤 <code>pm2 restart kakao</code>를 실행해 주십시오.",
+    ],
     "gate_button": ["✅ 가입을 완료했습니다"],
     "gate_ok": ["✅ 확인되었습니다. 이용해 주셔서 감사합니다."],
     "gate_missing": ["❗ 아직 가입이 확인되지 않은 채널이 있습니다: {missing}. 가입 후 다시 눌러 주십시오."],

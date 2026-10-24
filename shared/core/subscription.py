@@ -123,3 +123,23 @@ class SubscriptionGate(BaseMiddleware):
         pending = self._pending.pop(user_id, None)
         if pending is not None and self.dp is not None:
             await self.dp.feed_update(bot, pending)
+
+
+async def self_check(bot: Bot, cfg: BotConfig) -> list[str]:
+    """봇이 필수 채널의 관리자인지 점검한다. 관리자가 아니면 가입 여부를 확인할 수 없다.
+
+    문제가 있는 채널마다 사람이 읽을 수 있는 설명을 돌려준다 (없으면 빈 리스트).
+    """
+    problems: list[str] = []
+    if not cfg.common.channels:
+        return problems
+    me = await bot.me()
+    for ch in cfg.common.channels:
+        try:
+            m = await bot.get_chat_member(ch.chat_id, me.id)
+        except TelegramAPIError as e:
+            problems.append(f"{ch.chat_id}: 채널을 조회할 수 없습니다 ({e}). 채널 주소와 봇 초대 여부를 확인해 주십시오.")
+            continue
+        if m.status not in ("administrator", "creator"):
+            problems.append(f"{ch.chat_id}: 봇이 관리자가 아닙니다(현재 {m.status}). 채널 관리자로 추가해 주십시오.")
+    return problems

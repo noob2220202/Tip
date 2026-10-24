@@ -1,5 +1,4 @@
 import json
-import subprocess
 from pathlib import Path
 
 from aiogram import Router
@@ -13,7 +12,7 @@ from core.broadcast.sender import CampaignSender
 from core.config import Channel
 from core.logging_setup import TokenMaskFilter
 from core.texts import Texts
-from tests.conftest import ADMIN, cb_update, msg_update
+from testkit.fixtures import ADMIN, cb_update, msg_update
 
 CH = Channel(chat_id="@chan", url="https://t.me/chan", title="채널")
 ROOT = Path(__file__).resolve().parent.parent
@@ -172,20 +171,28 @@ def test_token_mask():
     assert "AAAA" not in rec.getMessage() and "<token>" in rec.getMessage()
 
 
-def test_ecosystem_config():
-    out = subprocess.run(
-        ["node", "-e", "console.log(JSON.stringify(require('./ecosystem.config.js').apps))"],
-        cwd=ROOT, capture_output=True, text=True,
-    )
-    apps = json.loads(out.stdout)
-    assert [a["name"] for a in apps] == ["kakao"]
-    assert apps[0]["script"] == "main.py" and apps[0]["interpreter"] == "python3"
-    assert (ROOT / apps[0]["script"]).exists()
-
-
 def test_repo_common_toml_requires_channel():
     from core.config import load_common
 
     c = load_common(ROOT / "config" / "common.toml")
     assert [(x.chat_id, x.url) for x in c.channels] == [("@GGULLTIP", "https://t.me/GGULLTIP")]
-    assert c.fail_mode in ("allow", "block")
+    assert c.fail_mode == "block"
+
+
+async def test_self_check_reports_when_bot_is_not_channel_admin(make_cfg, bot, tg):
+    from core.subscription import self_check
+
+    cfg = make_cfg(channels=[CH])
+    assert await self_check(bot, cfg) != []                       # 봇이 채널에 없음(left)
+    tg.members[("@chan", 1)] = "member"                           # 일반 멤버여도 안 된다
+    problems = await self_check(bot, cfg)
+    assert len(problems) == 1 and "관리자가 아닙니다" in problems[0]
+    tg.members[("@chan", 1)] = "administrator"
+    assert await self_check(bot, cfg) == []
+    assert await self_check(bot, make_cfg()) == []                # 채널 미설정이면 점검할 것이 없다
+
+
+def test_repo_gate_blocks_on_failure():
+    from core.config import load_common
+
+    assert load_common(ROOT / "config" / "common.toml").fail_mode == "block"
