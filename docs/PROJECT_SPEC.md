@@ -8,7 +8,8 @@
 
 - 클릭 추적은 **제외**한다. 추적 URL, 클릭 서버, CTR 지표는 만들지 않는다.
 - 봇이 AI로 만든 티가 나지 않도록 문체와 서식 규칙을 적용한다.
-- 진행 방식 1번(계획 보여주고 승인 후 구현)은 계획 제시까지 끝났고, 구현 승인은 아직 받지 않았다.
+- 진행 방식 1번(계획 보여주고 승인 후 구현)은 완료됐다. 구현 승인을 받았고 범위는 core 전체 + 카카오 스티커 봇이다.
+- 두 번째 봇으로 `kakao_sticker_bot`(카카오 이모티콘샵 링크 → 텔레그램 스티커 세트)을 추가했다. 세트 제목은 항상 `TIPㅣ이름`이다.
 
 ## 제약
 
@@ -42,12 +43,17 @@ Tip/
 │   ├── common.toml        # 필수 채널, 캐시 TTL, 게이트 fail 모드, 레이트리밋
 │   └── common.example.toml
 ├── bots/
-│   └── example_bot/       # 첫 번째 ping/echo 검증용 봇
-│       ├── .env.example   # BOT_TOKEN, ADMIN_IDS
-│       ├── main.py
-│       ├── texts.py
-│       ├── handlers/
-│       └── data/          # bot.db (gitignore)
+│   ├── example_bot/       # 첫 번째 ping/echo 검증용 봇
+│   │   ├── .env.example   # BOT_TOKEN, ADMIN_IDS
+│   │   ├── main.py
+│   │   ├── texts.py
+│   │   ├── handlers/
+│   │   └── data/          # bot.db (gitignore)
+│   └── kakao_sticker_bot/ # 이모티콘샵 링크 → 텔레그램 스티커 세트
+│       ├── kakao.py       # 링크 파싱, 팩 조회, 세션 쿠키 (kakaot/server.js 포팅)
+│       ├── media.py       # WebP → WEBM(비디오 스티커) / 정적 스티커 변환 (Pillow + ffmpeg)
+│       ├── stickers.py    # 세트 이름·제목 규칙, 세트 생성
+│       └── handlers/convert.py
 ├── tools/new_bot.py       # 봇 템플릿 생성기
 ├── scripts/
 │   ├── setup_server.sh    # Python/pip/pm2/Node 설치, ufw, 스왑, 의존성 설치
@@ -202,4 +208,4 @@ CREATE INDEX idx_recip_pending ON campaign_recipients(campaign_id, status);
 
 ## 의존성
 
-`aiogram`, `aiosqlite`, `aiohttp`(테스트용 목 서버), `python-dotenv`를 `requirements.txt`에 버전 고정한다. Python 3.11+ 기준으로 `tomllib`를 쓴다.
+`aiogram`, `aiosqlite`, `aiohttp`(카카오 조회 + 테스트용 목 서버), `python-dotenv`, `Pillow`(스티커 봇의 WebP 프레임 디코딩)를 `requirements.txt`에 버전 고정한다. 테스트 도구(`pytest`, `pytest-asyncio`)는 `requirements-dev.txt`에 둔다. 스티커 봇은 시스템 패키지 `ffmpeg`(libvpx-vp9)도 필요하다. Python 3.11+ 기준으로 `tomllib`를 쓴다.
