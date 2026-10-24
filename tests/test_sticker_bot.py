@@ -295,3 +295,32 @@ async def test_start_and_help_are_formal_rich_and_have_shop_link(make_cfg, bot, 
     h = tg.of("sendMessage")[-1]["text"]
     assert "자주 묻는 질문" in h and len(h) < 4096
     await db.close()
+
+
+async def test_download_returns_whole_body_even_when_it_arrives_in_chunks(monkeypatch):
+    """큰 이미지는 여러 조각으로 도착한다. 첫 조각만 읽으면 잘린 파일이 되어 디코더가 못 연다."""
+    import asyncio
+
+    data = __import__("os").urandom(200_000)   # 여러 조각으로 나뉘어 도착하는 크기
+
+    async def slow(request):
+        resp = web.StreamResponse()
+        resp.content_length = len(data)
+        await resp.prepare(request)
+        for i in range(0, len(data), 4096):
+            await resp.write(data[i : i + 4096])
+            await asyncio.sleep(0.01)
+        return resp
+
+    app = web.Application()
+    app.router.add_get("/big", slow)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    await web.TCPSite(runner, "127.0.0.1", 0).start()
+    monkeypatch.setattr(kakao, "is_kakao_host", lambda u: u.startswith("http://127.0.0.1"))
+    try:
+        assert len(data) > 4096 * 2
+        got = await KakaoClient(Session(None)).download(f"http://127.0.0.1:{runner.addresses[0][1]}/big")
+        assert got == data
+    finally:
+        await runner.cleanup()

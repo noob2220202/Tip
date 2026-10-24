@@ -91,7 +91,12 @@ class KakaoClient:
             async with http.get(url, headers={"Range": "bytes=0-127"}) as r:
                 if r.status not in (200, 206):
                     return None
-                return detect_kind(await r.content.read(128))
+                # read(n)은 도착한 조각만 주므로 128바이트가 채워질 때까지 읽는다
+                try:
+                    head = await r.content.readexactly(128)
+                except asyncio.IncompleteReadError as e:   # 파일이 128바이트보다 작은 경우
+                    head = e.partial
+                return detect_kind(head)
         except (aiohttp.ClientError, TimeoutError):
             return None
 
@@ -140,7 +145,12 @@ class KakaoClient:
             async with http.get(url) as r:
                 if r.status != 200:
                     raise KakaoError("이미지를 받는 데 실패했습니다.")
-                buf = await r.content.read(MAX_IMAGE_BYTES + 1)
+                if (r.content_length or 0) > MAX_IMAGE_BYTES:
+                    raise KakaoError("이미지가 너무 큽니다.")
+                # content.read(n)은 지금까지 도착한 조각만 돌려주므로 반드시 끝까지 읽는다
+                buf = await r.read()
                 if len(buf) > MAX_IMAGE_BYTES:
                     raise KakaoError("이미지가 너무 큽니다.")
+                if r.content_length is not None and len(buf) != r.content_length:
+                    raise KakaoError("이미지를 받는 중 끊겼습니다.")
                 return buf
