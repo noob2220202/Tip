@@ -229,3 +229,39 @@ async def test_login_hint_is_not_error():
         raise
     finally:
         srv.shutdown()
+
+
+async def test_login_dismisses_password_change_interstitial():
+    import http.server
+    import threading
+
+    from playwright.async_api import async_playwright
+
+    from bot import login
+
+    html = (b'<html><body><p>Kakao \xea\xb0\x9c\xec\x9d\xb8\xec\xa0\x95\xeb\xb3\xb4 \xeb\xb9\x84\xeb\xb0\x80\xeb\xb2\x88\xed\x98\xb8\xeb\xa5\xbc \xeb\xb3\x80\xea\xb2\xbd\xed\x95\xb4 \xec\xa3\xbc\xec\x84\xb8\xec\x9a\x94</p>'
+            b'<button>\xed\x99\x95\xec\x9d\xb8</button>'
+            b'<button onclick="document.body.innerHTML=\'done\'">\xeb\x8b\xa4\xec\x9d\x8c\xec\x97\x90 \xeb\xb3\x80\xea\xb2\xbd\xed\x95\x98\xea\xb8\xb0</button></body></html>')
+
+    class H(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(200); self.send_header("Content-Type", "text/html; charset=utf-8"); self.end_headers()
+            self.wfile.write(html)
+        def log_message(self, *a): pass
+
+    srv = http.server.HTTPServer(("127.0.0.1", 0), H)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    try:
+        async with async_playwright() as pw:
+            try:
+                b = await pw.chromium.launch(executable_path="/opt/pw-browsers/chromium")
+            except Exception:  # noqa: BLE001
+                pytest.skip("브라우저를 쓸 수 없는 환경")
+            pg = await b.new_page()
+            await pg.goto(f"http://127.0.0.1:{srv.server_port}/")
+            assert await login.dismiss_interstitial(pg) is True
+            assert (await pg.inner_text("body")).strip() == "done"   # '확인'이 아니라 '다음에 변경하기'를 눌렀다
+            assert await login.dismiss_interstitial(pg) is False
+            await b.close()
+    finally:
+        srv.shutdown()

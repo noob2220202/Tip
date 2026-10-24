@@ -71,6 +71,21 @@ async def click_first(page, selectors, retries=5, delay=300, has_text=None) -> b
     return False
 
 
+SKIP_TEXTS = ("다음에 변경하기", "다음에 하기", "나중에 변경", "나중에 하기", "건너뛰기")
+
+
+async def dismiss_interstitial(page) -> bool:
+    """로그인 직후 뜨는 안내 화면(비밀번호 변경 권유 등)에서 '다음에 ...'을 눌러 넘긴다."""
+    for text in SKIP_TEXTS:
+        loc = page.locator("button:visible, a:visible").filter(has_text=text).first
+        if await _visible(loc):
+            print(f"안내 화면이 떠서 '{text}'를 눌렀어요.")
+            await loc.click()
+            await settle(page)
+            return True
+    return False
+
+
 async def any_visible(page, selectors) -> bool:
     return any([await _visible(page.locator(s).first) for s in selectors])
 
@@ -123,12 +138,36 @@ async def dump_inputs(page, label: str) -> None:
         pass
 
 
+ACCOUNT_URL = "https://accounts.kakao.com/weblogin/account"
+
+
+async def verify_logged_in(page) -> bool:
+    """안내 화면을 넘긴 뒤 판정한다.
+
+    e.kakao.com은 로그인 없이도 열려서 판정에 쓸 수 없다. 대신 로그인해야만 열리는 계정 페이지가
+    로그인 화면(/login)으로 튕기지 않으면 로그인된 것으로 본다.
+    """
+    for _ in range(3):
+        if not await dismiss_interstitial(page):
+            break
+    if is_logged_in_url(page.url):
+        return True
+    try:
+        await page.goto(ACCOUNT_URL, wait_until="domcontentloaded")
+        await settle(page)
+    except Exception:  # noqa: BLE001
+        return False
+    return "/login" not in page.url
+
+
 async def wait_for_confirmation(page, total_ms=90000, interval_ms=3000) -> tuple[bool, str]:
     """카카오톡 앱 '로그인 승인'처럼 화면 변화 없이 휴대폰 승인을 기다리는 경우를 위해 길게 본다."""
     waited = 0
     while waited < total_ms:
         if is_logged_in_url(page.url):
             return True, ""
+        if await dismiss_interstitial(page):
+            continue
         err = await error_text(page)
         if err:
             return False, err
@@ -196,7 +235,7 @@ async def run(out: Path) -> int:
                     await click_first(page, [CONTINUE_SELECTOR], retries=1, has_text=re.compile("확인|계속|동의|허용"))
                     await settle(page)
 
-            ok = is_logged_in_url(page.url)
+            ok = await verify_logged_in(page)
             if not ok:
                 await dump_text(page)
                 print("\n로그인 완료를 확인하지 못했어요. 로그인 안 된 세션이 봇에 쓰이면 안 돼서 저장하지 않았어요.")
