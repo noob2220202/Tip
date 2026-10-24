@@ -196,3 +196,39 @@ def test_repo_gate_blocks_on_failure():
     from core.config import load_common
 
     assert load_common(ROOT / "config" / "common.toml").fail_mode == "block"
+
+
+async def test_drain_waits_for_inflight_update_and_gives_up_after_timeout(make_cfg, bot, db):
+    import asyncio
+
+    from core.bot_runner import drain
+
+    cfg = make_cfg()
+    router = Router(name="slow")
+    done = []
+
+    @router.message(Command("slow"))
+    async def slow(message: Message) -> None:
+        await asyncio.sleep(0.4)
+        done.append("finished")
+
+    dp, _ = await assemble(cfg, bot, db, [router], Texts())
+    job = asyncio.create_task(dp.feed_update(bot, msg_update(1, "/slow")))
+    await asyncio.sleep(0.1)
+    assert await drain(dp["tracker"], timeout=5) == 0               # 끝날 때까지 기다린다
+    assert done == ["finished"]
+    await job
+
+    router2 = Router(name="stuck")
+
+    @router2.message(Command("stuck"))
+    async def stuck(message: Message) -> None:
+        await asyncio.sleep(30)
+
+    cfg2 = make_cfg()
+    dp2, _ = await assemble(cfg2, bot, db, [router2], Texts())
+    job2 = asyncio.create_task(dp2.feed_update(bot, msg_update(1, "/stuck")))
+    await asyncio.sleep(0.1)
+    assert await drain(dp2["tracker"], timeout=0.2) == 1             # 시간이 지나면 포기한다
+    job2.cancel()
+    assert await drain(dp2["tracker"], timeout=1) == 0

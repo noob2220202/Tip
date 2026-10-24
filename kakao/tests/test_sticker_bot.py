@@ -363,6 +363,7 @@ def test_ecosystem_config():
     apps = json.loads(out.stdout)
     assert [a["name"] for a in apps] == ["kakao"]
     assert apps[0]["script"] == "main.py" and apps[0]["interpreter"] == "python3"
+    assert apps[0]["kill_timeout"] > 120_000      # 봇의 종료 대기(DRAIN_SECONDS)보다 길어야 한다
     assert (KAKAO / apps[0]["script"]).exists()
 
 

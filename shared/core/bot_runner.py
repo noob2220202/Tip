@@ -6,7 +6,7 @@ import logging
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Iterable, Mapping, Sequence
 
-from aiogram import Bot, Dispatcher, Router
+from aiogram import BaseMiddleware, Bot, Dispatcher, Router
 from aiogram.client.default import DefaultBotProperties
 from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.client.telegram import TelegramAPIServer
@@ -26,6 +26,38 @@ from core.subscription import SubscriptionGate, self_check
 from core.texts import Texts
 
 log = logging.getLogger(__name__)
+
+# 종료(SIGINT/SIGTERM) 때 진행 중인 요청이 끝나기를 기다리는 최대 시간(초). pm2 kill_timeout보다 짧게 둔다.
+DRAIN_SECONDS = 120
+
+
+class InflightTracker(BaseMiddleware):
+    """처리 중인 update 작업을 기억한다. aiogram은 종료할 때 이 작업들을 기다리지 않고 취소하기 때문에,
+    스티커를 만들던 중에 봇이 재시작되면 작업이 그대로 죽는다. 종료 전에 끝나기를 기다리는 데 쓴다."""
+
+    def __init__(self) -> None:
+        self.tasks: set[asyncio.Task] = set()
+
+    async def __call__(self, handler, event, data):
+        task = asyncio.current_task()
+        self.tasks.add(task)
+        try:
+            return await handler(event, data)
+        finally:
+            self.tasks.discard(task)
+
+
+async def drain(tracker: InflightTracker, timeout: float = DRAIN_SECONDS) -> int:
+    """진행 중인 작업이 끝나기를 기다린다. 시간 안에 못 끝난 작업 수를 돌려준다."""
+    current = asyncio.current_task()
+    pending = {t for t in tracker.tasks if t is not current}
+    if not pending:
+        return 0
+    log.info("진행 중인 작업 %d개가 끝나기를 기다립니다 (최대 %d초)", len(pending), timeout)
+    _, left = await asyncio.wait(pending, timeout=timeout)
+    if left:
+        log.warning("시간 안에 끝나지 못한 작업 %d개를 취소합니다", len(left))
+    return len(left)
 
 
 def _core_router() -> Router:
@@ -73,6 +105,9 @@ async def assemble(
     sender = CampaignSender(bot, db, texts, cfg.common.rate_per_sec)
     dp.workflow_data.update(db=db, cfg=cfg, texts=texts, sender=sender, **(data or {}))
 
+    tracker = InflightTracker()
+    dp.update.outer_middleware(tracker)    # 가장 바깥에서 모든 update를 추적
+    dp["tracker"] = tracker
     if gate_enabled:
         gate = SubscriptionGate(cfg, db, texts)
         gate.dp = dp
@@ -138,10 +173,12 @@ async def _main(
         # 검수 봇이 아직 안 떠 있을 수 있어 재시도하므로 폴링을 막지 않게 백그라운드로 돌린다
         check_task = asyncio.create_task(_warn_gate_problems(bot, cfg, texts, direct=not gate))
         await sender.resume_all()
-        await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())
+        # 세션은 진행 중인 작업이 끝난 뒤에 직접 닫는다 (close_bot_session=False)
+        await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types(), close_bot_session=False)
     finally:
         if check_task:
             check_task.cancel()
+        await drain(dp["tracker"])
         await sender.stop()
         await bot.session.close()
         await db.close()

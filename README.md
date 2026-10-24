@@ -44,7 +44,7 @@ bash scripts/deploy.sh                  # pip install + 모든 봇 pm2 시작/�
 bash scripts/install_cron.sh            # 매일 04:10 DB 백업 (7일 보관)
 ```
 
-이후 업데이트는 `bash /root/Tip/scripts/deploy.sh` 한 번이면 됩니다 (git pull → pip install → 모든 봇 pm2 reload). 토큰이 없는 봇은 시작하자마자 종료되고, 20번까지만 재시작합니다.
+이후 업데이트는 `bash /root/Tip/scripts/deploy.sh` 한 번이면 됩니다 (git pull → pip install → 모든 봇 pm2 reload). 스티커를 만드는 중에 재시작하면 봇이 그 작업이 끝나기를 기다렸다가(최대 120초) 종료하므로, 반영이 조금 늦을 수 있습니다. 토큰이 없는 봇은 시작하자마자 종료되고, 20번까지만 재시작합니다.
 
 | 스크립트 | 설명 |
 |---|---|

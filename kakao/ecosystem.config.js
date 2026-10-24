@@ -12,6 +12,8 @@ module.exports = {
       cwd: root,
       env: { PYTHONPATH: [root, path.join(root, "..", "shared")].join(path.delimiter), PYTHONUNBUFFERED: "1" },
       autorestart: true,
+      // 종료/재시작 때 진행 중인 스티커 제작이 끝나기를 기다린다(봇이 최대 120초 대기). pm2 기본값 1.6초면 중간에 강제 종료된다.
+      kill_timeout: 130000,
       max_memory_restart: "400M",
       // 시작 직후 계속 죽으면(토큰 누락 등) 무한 재시작하지 않도록 한다
       min_uptime: "10s",
