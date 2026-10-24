@@ -93,18 +93,21 @@ run_bot(Path(__file__).parent, routers=[router], texts=TEXTS,
 - 한 세트 최대 120개.
 - 움직이는 이모티콘은 카카오 로그인 세션이 있어야 받아집니다. 세션이 없으면 정지 이미지로 대신 만들지 않고, 유저에게 점검 중이라고 안내하며 관리자에게 시간당 한 번 알립니다.
 
-### 카카오 세션 준비
+### 카카오 세션 준비 (1회성 로그인)
 
-`kakaot` 저장소에서 한 번 로그인해 `session.json`을 만들고 복사합니다.
+서버에서 직접 로그인합니다. 화면(X서버)이 없어도 headless 브라우저로 동작합니다.
 
 ```bash
-# kakaot 쪽 (GUI 없는 서버도 가능)
-npm run setup && npm run login
-# Tip 서버로 복사
-cp session.json /path/to/Tip/bots/kakao_sticker_bot/data/session.json
+pip install --break-system-packages -r requirements-login.txt
+python3 -m playwright install --with-deps chromium
+python3 -m bots.kakao_sticker_bot.login      # 프로젝트 루트에서 실행
 ```
 
-경로를 바꾸려면 `.env`에 `KAKAO_SESSION_PATH`를 적습니다. 세션이 만료되면 같은 절차를 다시 하면 되고, 봇 재시작은 필요 없습니다(요청마다 파일을 읽습니다). `session.json`에는 로그인 쿠키가 들어 있으니 커밋하지 마세요(`bots/*/data/`는 `.gitignore`).
+터미널에 아이디, 비밀번호(입력이 화면에 보이지 않음), 필요하면 인증번호를 입력하면 `bots/kakao_sticker_bot/data/session.json`(권한 600)이 만들어집니다. 카카오톡 앱 "로그인 승인" 알림이 오는 계정이면 휴대폰에서 승인을 눌러주세요(최대 90초 대기). 화면 구조가 바뀌어 입력란을 못 찾으면 `[디버그]` 줄에 현재 input 목록이 찍힙니다.
+
+GUI가 있는 PC에서 [kakaot](https://github.com/noob2220202/kakaot)의 `npm run login`으로 만든 `session.json`을 같은 위치에 복사해도 됩니다.
+
+경로를 바꾸려면 `.env`에 `KAKAO_SESSION_PATH`를 적습니다. 세션이 만료되면 로그인 스크립트를 다시 실행하면 되고, 봇 재시작은 필요 없습니다(요청마다 파일을 읽습니다). `session.json`에는 로그인 쿠키가 들어 있으니 커밋하지 마세요(`bots/*/data/`는 `.gitignore`).
 
 스티커마다 붙는 이모지는 `.env`의 `STICKER_EMOJI`(기본 😊)로 바꿀 수 있습니다.
 

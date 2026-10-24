@@ -183,3 +183,11 @@ async def test_partial_failure_skips_bad_image(make_cfg, bot, tg, kk, session_fi
     assert len(tg.sets[f"tip_6_bad_by_{BOT_USERNAME}"]["stickers"]) == 1
     assert "1개는 변환이 안 돼서" in tg.texts_to(6)[-1]
     await db.close()
+
+
+def test_login_url_detection():
+    from bots.kakao_sticker_bot.login import is_logged_in_url
+
+    assert is_logged_in_url("https://e.kakao.com/")
+    assert not is_logged_in_url("https://accounts.kakao.com/login?continue=x")
+    assert not is_logged_in_url("https://example.com/kakao.com/")
