@@ -90,6 +90,16 @@ async def any_visible(page, selectors) -> bool:
     return any([await _visible(page.locator(s).first) for s in selectors])
 
 
+def is_real_error(text: str) -> bool:
+    """클래스 이름에 error가 들어간 요소 중에는 안내 문구나 주소 문자열도 섞여 있어서 걸러낸다."""
+    text = text.strip()
+    if not text or len(text) > 200:
+        return False
+    if text.startswith(("TIP", "/", "http", "#")):   # 입력 안내("TIP ..."), 주소
+        return False
+    return True
+
+
 async def error_text(page) -> str:
     for sel in ERROR_SELECTORS:
         try:
@@ -103,7 +113,7 @@ async def error_text(page) -> str:
                 text = (await loc.inner_text()).strip()
             except Exception:  # noqa: BLE001
                 continue
-            if text and not text.startswith("TIP"):   # "TIP ..."은 입력 안내 문구
+            if is_real_error(text):
                 return text
     return ""
 
@@ -173,6 +183,8 @@ async def wait_for_confirmation(page, total_ms=90000, interval_ms=3000) -> tuple
             return False, err
         await page.wait_for_timeout(interval_ms)
         waited += interval_ms
+        if waited % 15000 == 0:
+            print(f"  ...승인 기다리는 중 ({waited // 1000}초)")
     return is_logged_in_url(page.url), ""
 
 

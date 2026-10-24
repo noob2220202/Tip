@@ -265,3 +265,13 @@ async def test_login_dismisses_password_change_interstitial():
             await b.close()
     finally:
         srv.shutdown()
+
+
+def test_login_is_real_error():
+    from bot.login import is_real_error
+
+    assert is_real_error("비밀번호가 올바르지 않습니다.")
+    assert not is_real_error("TIP 카카오메일이 있다면 메일 아이디만 입력해 보세요.")
+    assert not is_real_error("/login/?continue=https%3A%2F%2Fe.kakao.com%2F")
+    assert not is_real_error("https://accounts.kakao.com/login")
+    assert not is_real_error("   ")
