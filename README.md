@@ -16,7 +16,9 @@
 ## 서버 배포
 
 ```bash
-git clone <저장소> Tip && cd Tip
+# 서버 구조: /root/kakao 가 이 프로젝트 루트, 다른 프로젝트는 /root 아래 각자 폴더
+git clone -b ccr-40e8c943-gs8iqn https://github.com/noob2220202/Tip.git /root/kakao
+cd /root/kakao
 sudo bash scripts/setup_server.sh     # Python/pip/ffmpeg/sqlite3/Node/pm2, ufw, 스왑, 의존성
 pm2 startup                            # 출력되는 명령을 1회 실행
 
