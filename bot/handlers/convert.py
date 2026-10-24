@@ -11,6 +11,7 @@ from aiogram.exceptions import TelegramAPIError
 from aiogram.types import Message
 
 from bot import media, stickers
+from bot.handlers.common import NO_PREVIEW, shop_keyboard
 from bot.kakao import KakaoClient, KakaoError, Pack, Session, parse_link
 from core.config import BotConfig
 from core.style import esc
@@ -45,7 +46,7 @@ async def _alert_admins(message: Message, cfg: BotConfig, texts: Texts, state: d
     state["last"] = time.time()
     for admin_id in cfg.admin_ids:
         try:
-            await message.bot.send_message(admin_id, esc(texts.get("admin_session_alert")))
+            await message.bot.send_message(admin_id, texts.get("admin_session_alert"))
         except TelegramAPIError:
             pass
 
@@ -109,7 +110,7 @@ async def _handle(message, db, cfg, texts, kakao, sem, emoji, alert_state) -> No
     try:
         pack: Pack = await kakao.fetch_pack(key)
     except KakaoError as e:
-        await progress.set(esc(str(e)), force=True)
+        await progress.set(str(e), force=True)
         return
 
     # 움직이는 건 로그인 세션이 있어야 받을 수 있다. 세션이 없으면 정지 이미지로 대신 만들지 않는다.
@@ -179,4 +180,4 @@ async def _handle(message, db, cfg, texts, kakao, sem, emoji, alert_state) -> No
 
 @router.message(F.text & ~F.text.startswith("/"))
 async def on_text(message: Message, texts: Texts) -> None:
-    await message.answer(texts.get("need_link"))
+    await message.answer(texts.get("need_link"), link_preview_options=NO_PREVIEW, reply_markup=shop_keyboard(texts))

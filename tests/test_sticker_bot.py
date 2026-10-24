@@ -172,7 +172,7 @@ async def test_bad_inputs(make_cfg, bot, tg, kk, session_file):
     await dp.feed_update(bot, msg_update(4, "안녕"))
     assert "링크" in tg.texts_to(4)[-1]
     await dp.feed_update(bot, msg_update(4, "https://e.kakao.com/t/nope"))
-    assert "못 찾았어요" in tg.texts_to(4)[-1] and not tg.sets
+    assert "찾을 수 없습니다" in tg.texts_to(4)[-1] and not tg.sets
     await db.close()
 
 
@@ -181,7 +181,7 @@ async def test_partial_failure_skips_bad_image(make_cfg, bot, tg, kk, session_fi
     dp, db, _ = await make_bot(make_cfg, bot, kk, session_file)
     await dp.feed_update(bot, msg_update(6, "https://e.kakao.com/t/bad"))
     assert len(tg.sets[f"tip_6_bad_by_{BOT_USERNAME}"]["stickers"]) == 1
-    assert "1개는 변환이 안 돼서" in tg.texts_to(6)[-1]
+    assert "<b>1개</b>는 제외" in tg.texts_to(6)[-1]
     await db.close()
 
 
@@ -275,3 +275,23 @@ def test_login_is_real_error():
     assert not is_real_error("/login/?continue=https%3A%2F%2Fe.kakao.com%2F")
     assert not is_real_error("https://accounts.kakao.com/login")
     assert not is_real_error("   ")
+
+
+async def test_start_and_help_are_formal_rich_and_have_shop_link(make_cfg, bot, tg, kk, session_file):
+    dp, db, _ = await make_bot(make_cfg, bot, kk, session_file)
+    await dp.feed_update(bot, msg_update(21, "/start"))
+    start = tg.of("sendMessage")[-1]
+    t = start["text"]
+    assert "21" == start["chat_id"] and "테스터님, 환영합니다" in t
+    assert "https://e.kakao.com/" in t                                  # 이모티콘샵 링크
+    assert "<b>" in t and "<blockquote>" in t and "<code>" in t and "<u>" in t   # 굵게·인용·코드·밑줄
+    assert "TIPㅣ이모티콘이름" in t and len(t) < 4096
+    assert "해요" not in t and "주세요" not in t                        # 합쇼체
+    assert json.loads(start["reply_markup"])["inline_keyboard"][0][0]["url"] == "https://e.kakao.com/"
+    assert json.loads(start["link_preview_options"])["is_disabled"] is True
+    async with db.execute("SELECT COUNT(*) FROM users WHERE user_id=21") as c:
+        assert (await c.fetchone())[0] == 1                            # /start 등록은 유지
+    await dp.feed_update(bot, msg_update(21, "/help"))
+    h = tg.of("sendMessage")[-1]["text"]
+    assert "자주 묻는 질문" in h and len(h) < 4096
+    await db.close()

@@ -106,17 +106,17 @@ class KakaoClient:
                 ) as r:
                     if r.status != 200:
                         log.warning("카카오 API 실패 key=%s status=%s", key, r.status)
-                        raise KakaoError("이모티콘 정보를 못 찾았어요. 링크를 다시 확인해 줘요.")
+                        raise KakaoError("❌ <b>이모티콘 정보를 찾을 수 없습니다.</b>\n링크를 다시 확인해 주십시오.")
                     js = await r.json(content_type=None)
             except (aiohttp.ClientError, TimeoutError) as e:
                 log.warning("카카오 연결 실패 key=%s: %s", key, e)
-                raise KakaoError("카카오 쪽에 연결이 안 돼요. 조금 있다가 다시 보내줘요.") from e
+                raise KakaoError("⚠️ <b>카카오 서버에 연결하지 못했습니다.</b>\n잠시 후 다시 시도해 주십시오.") from e
 
             items = ((js or {}).get("contents") or {}).get("items") or []
             urls = [it["animatedUrl"] for it in items if isinstance(it, dict) and isinstance(it.get("animatedUrl"), str)]
             urls = [u for u in urls if is_kakao_host(u)]
             if not urls:
-                raise KakaoError("이모티콘 이미지를 못 찾았어요. 링크를 다시 확인해 줘요.")
+                raise KakaoError("❌ <b>이모티콘 이미지를 찾을 수 없습니다.</b>\n이모티콘 상세 페이지의 링크인지 확인해 주십시오.")
 
             kinds = await asyncio.gather(*(self._sniff(http, u) for u in urls))
 
@@ -134,13 +134,13 @@ class KakaoClient:
 
     async def download(self, url: str) -> bytes:
         if not is_kakao_host(url):
-            raise KakaoError("허용되지 않은 주소예요.")
+            raise KakaoError("허용되지 않은 주소입니다.")
         timeout = aiohttp.ClientTimeout(total=30)
         async with aiohttp.ClientSession(timeout=timeout) as http:
             async with http.get(url) as r:
                 if r.status != 200:
-                    raise KakaoError("이미지를 받다가 실패했어요.")
+                    raise KakaoError("이미지를 받는 데 실패했습니다.")
                 buf = await r.content.read(MAX_IMAGE_BYTES + 1)
                 if len(buf) > MAX_IMAGE_BYTES:
-                    raise KakaoError("이미지가 너무 커요.")
+                    raise KakaoError("이미지가 너무 큽니다.")
                 return buf

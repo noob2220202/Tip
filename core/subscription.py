@@ -59,7 +59,7 @@ class SubscriptionGate(BaseMiddleware):
 
     def _keyboard(self, missing: list[Channel]) -> InlineKeyboardMarkup:
         rows = [[InlineKeyboardButton(text=ch.title or str(ch.chat_id), url=ch.url)] for ch in missing]
-        rows.append([InlineKeyboardButton(text="가입했어요", callback_data=CHECK_DATA)])
+        rows.append([InlineKeyboardButton(text=self.texts.get("gate_button"), callback_data=CHECK_DATA)])
         return InlineKeyboardMarkup(inline_keyboard=rows)
 
     async def __call__(
