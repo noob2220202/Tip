@@ -14,6 +14,7 @@ Tip/                        ← 저장소 (서버에서는 /root/Tip)
 │   ├── testkit/            #   테스트용 가짜 Bot API 서버와 pytest 픽스처
 │   └── tests/
 ├── kakao/                  ← 봇: 카카오 이모티콘 → 텔레그램 스티커  (자세한 설명: kakao/README.md)
+├── boost/                  ← 봇: 그룹·채널 부스트 판매 (USDT TRC20 결제, SMM 패널 연동)  (boost/README.md)
 ├── verify/                 ← 봇: 채널 가입 검수 전용 (채널 관리자는 이 봇 하나)
 ├── scripts/                ← 서버 운영 스크립트 (전체 봇 대상)
 └── docs/
@@ -21,6 +22,7 @@ Tip/                        ← 저장소 (서버에서는 /root/Tip)
 /root/                      ← 서버에서 봇마다 링크로 연결
 ├── Tip/
 ├── kakao -> /root/Tip/kakao
+├── boost -> /root/Tip/boost
 ├── verify -> /root/Tip/verify
 └── 다른봇 -> /root/Tip/다른봇
 ```
@@ -38,6 +40,7 @@ bash scripts/link_bots.sh               # /root/kakao -> /root/Tip/kakao 링크 
 cd /root/verify && cp .env.example .env && nano .env     # BOT_TOKEN, ADMIN_IDS, VERIFY_SECRET
 cd /root/kakao  && cp .env.example .env && nano .env     # BOT_TOKEN, ADMIN_IDS, VERIFY_SECRET(verify와 같은 값)
 # 카카오 로그인(1회)은 kakao/README.md 참고
+cd /root/boost  && cp .env.example .env && nano .env     # 지갑·TronGrid·SMM 패널 설정은 boost/README.md 참고
 
 cd /root/Tip
 bash scripts/deploy.sh                  # pip install + 모든 봇 pm2 시작/반영 + pm2 save
@@ -135,4 +138,5 @@ pip install --break-system-packages -r shared/requirements-dev.txt
 (cd shared && python3 -m pytest)    # 게이트, 브로드캐스트, 재개, 설정
 (cd kakao  && python3 -m pytest)    # 스티커 봇
 (cd verify && python3 -m pytest)    # 검수 봇
+(cd boost  && python3 -m pytest)    # 부스트 판매 봇
 ```

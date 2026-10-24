@@ -10,6 +10,7 @@
 - 봇이 AI로 만든 티가 나지 않도록 문체와 서식 규칙을 적용한다.
 - 진행 방식 1번(계획 보여주고 승인 후 구현)은 완료됐다. 구현 승인을 받았고 범위는 core 전체 + 카카오 스티커 봇이다.
 - 첫 봇은 `kakao`(카카오 이모티콘샵 링크 → 텔레그램 스티커 세트)다. 세트 제목은 항상 `@봇이름ㅣ이름`이다(봇 username을 실행 중에 읽어 붙인다).
+- 두 번째 봇은 `boost`(그룹·채널 부스트 판매)다. USDT(TRC20)로 결제하고, TronGrid로 입금을 확인하면 SMM 패널(표준 API v2)에 자동으로 주문한다. 입금 인정 조건은 보내는 주소·금액 정확 일치·주문 시간 안의 블록·미사용 txid다. 자세한 내용은 `boost/README.md`.
 - 봇마다 core를 복사하던 방식을 없애고 `shared/` 통합 폴더로 합쳤다. `bots/` 구조와 `tools/new_bot.py`는 없다. 새 봇은 `kakao/`를 참고해 `Tip/<봇>/` 폴더로 만든다.
 - 채널 가입 확인은 **검수 봇(`verify`)** 이 맡는다. 채널 관리자는 검수 봇 하나이고, 다른 봇은 같은 서버의 `127.0.0.1` 검수 서비스에 가입 여부를 물어본다(`gate.verifier_url`). 서비스는 `VERIFY_SECRET` 헤더로 인증한다.
 - 필수 채널 가입 확인이 실패하면 기본값을 차단(`block`)으로 둔다. 봇은 시작할 때 채널 관리자 여부를 점검해 관리자에게 알린다.
@@ -55,6 +56,11 @@ Tip/                            # 저장소 (서버: /root/Tip)
 │   ├── .env.example            # BOT_TOKEN, ADMIN_IDS, KAKAO_SESSION_PATH, STICKER_EMOJI
 │   ├── ecosystem.config.js     # pm2 앱 `kakao`
 │   └── requirements.txt, requirements-login.txt
+├── boost/                      # 봇: 그룹·채널 부스트 판매 (서버: /root/boost 링크)
+│   ├── main.py, bot/           # orders.py(주문 상태), payments.py(입금 매칭), tron.py, smm.py, fulfil.py, worker.py, levels.py(계산기), handlers/
+│   ├── config/products.toml    # 상품(패널 서비스 ID·개수·가격)과 레벨 계산 규칙
+│   ├── .env.example            # BOT_TOKEN, ADMIN_IDS, WALLET_ADDRESS, TRONGRID_API_KEY, SMM_API_URL/KEY, ORDER_TTL_MIN
+│   └── ecosystem.config.js     # pm2 앱 `boost`
 ├── verify/                     # 봇: 채널 가입 검수 (채널 관리자, 서버: /root/verify 링크)
 │   ├── main.py                 # 검수 서비스(127.0.0.1:VERIFY_PORT)를 띄움, 자기 자신에겐 게이트 없음
 │   ├── bot/                    # /start, /help, 관리자용 /channels, /check
