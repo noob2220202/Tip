@@ -148,26 +148,34 @@ async def dump_inputs(page, label: str) -> None:
         pass
 
 
-ACCOUNT_URL = "https://accounts.kakao.com/weblogin/account"
+LOGIN_COOKIES = ("_kawlt", "_karmt")   # 카카오 로그인 후에만 생기는 쿠키
 
 
-async def verify_logged_in(page) -> bool:
-    """안내 화면을 넘긴 뒤 판정한다.
+async def wait_logged_in_url(page, seconds: float = 12) -> bool:
+    """제출 직후에는 e.kakao.com으로 넘어가는 데 시간이 걸려서 잠깐 기다린다."""
+    for _ in range(int(seconds * 2)):
+        if is_logged_in_url(page.url):
+            return True
+        await page.wait_for_timeout(500)
+    return is_logged_in_url(page.url)
 
-    e.kakao.com은 로그인 없이도 열려서 판정에 쓸 수 없다. 대신 로그인해야만 열리는 계정 페이지가
-    로그인 화면(/login)으로 튕기지 않으면 로그인된 것으로 본다.
-    """
+
+async def login_cookie_names(context) -> list[str]:
+    cookies = await context.cookies()
+    return sorted({c["name"] for c in cookies if "kakao.com" in c.get("domain", "")})
+
+
+async def verify_logged_in(page, context) -> bool:
+    """안내 화면을 넘긴 뒤, 주소가 로그인 화면을 벗어났거나 로그인 쿠키가 생겼으면 성공으로 본다."""
     for _ in range(3):
         if not await dismiss_interstitial(page):
             break
-    if is_logged_in_url(page.url):
+    if await wait_logged_in_url(page):
         return True
-    try:
-        await page.goto(ACCOUNT_URL, wait_until="domcontentloaded")
-        await settle(page)
-    except Exception:  # noqa: BLE001
-        return False
-    return "/login" not in page.url
+    names = await login_cookie_names(context)
+    print(f"[디버그] 현재 URL: {page.url}")
+    print(f"[디버그] kakao.com 쿠키 이름: {', '.join(names) or '(없음)'}")
+    return any(n in names for n in LOGIN_COOKIES)
 
 
 async def wait_for_confirmation(page, total_ms=90000, interval_ms=3000) -> tuple[bool, str]:
@@ -212,6 +220,7 @@ async def run(out: Path) -> int:
 
             await click_first(page, SUBMIT_SELECTORS)
             await settle(page)
+            await wait_logged_in_url(page, seconds=8)
             await dump_inputs(page, "1차 로그인 제출 후")
 
             if not is_logged_in_url(page.url) and await any_visible(page, PW_SELECTORS):
@@ -247,14 +256,16 @@ async def run(out: Path) -> int:
                     await click_first(page, [CONTINUE_SELECTOR], retries=1, has_text=re.compile("확인|계속|동의|허용"))
                     await settle(page)
 
-            ok = await verify_logged_in(page)
+            ok = await verify_logged_in(page, context)
             if not ok:
                 await dump_text(page)
-                print("\n로그인 완료를 확인하지 못했어요. 로그인 안 된 세션이 봇에 쓰이면 안 돼서 저장하지 않았어요.")
-                print("승인 알림/인증번호를 놓쳤다면 다시 실행해 주세요.")
-                return 1
+                print("\n로그인 완료를 확인하지 못했어요.")
+                answer = (await asyncio.to_thread(input, "위 [디버그] 내용을 보고 직접 로그인된 것 같으면 그래도 저장할 수 있어요. 저장할까요? [y/N]: ")).strip().lower()
+                if answer != "y":
+                    print("로그인 안 된 세션이 봇에 쓰이면 안 돼서 저장하지 않았어요. 다시 실행해 주세요.")
+                    return 1
 
-            print("\n로그인에 성공했어요.")
+            print("\n로그인에 성공했어요." if ok else "\n확인은 못 했지만 직접 판단하신 대로 저장할게요.")
             state = await context.storage_state()
             out.parent.mkdir(parents=True, exist_ok=True)
             out.write_text(json.dumps(state, ensure_ascii=False, indent=2), "utf8")
