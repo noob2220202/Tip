@@ -13,17 +13,17 @@ from aiogram.types import BufferedInputFile, InputSticker
 
 log = logging.getLogger(__name__)
 
-TITLE_PREFIX = "TIPㅣ"
+TITLE_SEPARATOR = "ㅣ"
 MAX_TITLE = 64
 MAX_NAME = 64
 MAX_PER_SET = 120
 FIRST_BATCH = 50
 
 
-def make_title(name: str) -> str:
-    """세트 제목은 반드시 'TIPㅣ이름'. 64자를 넘으면 이름을 자른다."""
+def make_title(name: str, bot_username: str) -> str:
+    """세트 제목은 반드시 '@봇이름ㅣ이름'. 64자를 넘으면 이름을 자른다."""
     clean = re.sub(r"\s+", " ", name).strip() or "스티커"
-    return (TITLE_PREFIX + clean)[:MAX_TITLE]
+    return (f"@{bot_username}{TITLE_SEPARATOR}{clean}")[:MAX_TITLE]
 
 
 def make_set_name(user_id: int, key: str, bot_username: str) -> str:

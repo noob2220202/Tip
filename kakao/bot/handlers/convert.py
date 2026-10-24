@@ -156,7 +156,7 @@ async def _handle(message, db, cfg, texts, kakao, sem, emoji, alert_state) -> No
 
     me = await bot.me()
     set_name = stickers.make_set_name(user_id, key, me.username)
-    title = stickers.make_title(pack.title)
+    title = stickers.make_title(pack.title, me.username)
 
     # 링크 형태가 달라도(e.kakao.com/t/… 와 emoticon.kakao.com/items/…) 같은 이모티콘이면 이미지 목록이 같다
     fingerprint = hashlib.sha1((fmt + "\n" + "\n".join(urls)).encode()).hexdigest()

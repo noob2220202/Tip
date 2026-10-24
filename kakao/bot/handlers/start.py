@@ -18,11 +18,17 @@ router = Router(name="kakao_start")
 async def start(message: Message, db: aiosqlite.Connection, texts: Texts) -> None:
     u = message.from_user
     await users.register(db, u.id, u.username)
+    me = await message.bot.me()
     await message.answer(
-        texts.get("start", name=esc(u.first_name)), link_preview_options=NO_PREVIEW, reply_markup=shop_keyboard(texts)
+        texts.get("start", name=esc(u.first_name), bot=me.username),
+        link_preview_options=NO_PREVIEW,
+        reply_markup=shop_keyboard(texts),
     )
 
 
 @router.message(Command("help"))
 async def help_(message: Message, texts: Texts) -> None:
-    await message.answer(texts.get("help"), link_preview_options=NO_PREVIEW, reply_markup=shop_keyboard(texts))
+    me = await message.bot.me()
+    await message.answer(
+        texts.get("help", bot=me.username), link_preview_options=NO_PREVIEW, reply_markup=shop_keyboard(texts)
+    )

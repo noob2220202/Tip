@@ -106,8 +106,9 @@ def test_set_name_and_title_rules():
     long = stickers.make_set_name(42, "x" * 200, "Tip_Bot")
     assert len(long) <= 64 and long.endswith("_by_Tip_Bot") and "__" not in long
     assert stickers.make_set_name(42, "x" * 200, "Tip_Bot") == long  # 결정적
-    assert stickers.make_title("귀여운 비둘기") == "TIPㅣ귀여운 비둘기"
-    assert len(stickers.make_title("가" * 100)) == 64 and stickers.make_title("가" * 100).startswith("TIPㅣ")
+    assert stickers.make_title("귀여운 비둘기", "TIP_STICKERS_bot") == "@TIP_STICKERS_botㅣ귀여운 비둘기"
+    long_title = stickers.make_title("가" * 100, "TIP_STICKERS_bot")
+    assert len(long_title) == 64 and long_title.startswith("@TIP_STICKERS_botㅣ")
 
 
 def test_parse_link():
@@ -124,7 +125,7 @@ async def test_animated_pack_becomes_video_sticker_set(make_cfg, bot, tg, kk, se
     name = f"tip_7_pigeon_boy_by_{BOT_USERNAME}"
     assert name in tg.sets
     s = tg.sets[name]
-    assert s["title"] == "TIPㅣ귀여운 비둘기"
+    assert s["title"] == f"@{BOT_USERNAME}ㅣ귀여운 비둘기"
     assert len(s["stickers"]) == 2 and all(x["format"] == "video" for x in s["stickers"])
     assert all(sz <= 256 * 1024 for sz in s["files"].values())
     assert kk.last_cookie == "k=v"
@@ -291,7 +292,7 @@ async def test_start_and_help_are_formal_rich_and_have_shop_link(make_cfg, bot, 
     assert "21" == start["chat_id"] and "테스터님, 환영합니다" in t
     assert "https://e.kakao.com/" in t                                  # 이모티콘샵 링크
     assert "<b>" in t and "<blockquote>" in t and "<code>" in t and "<u>" in t   # 굵게·인용·코드·밑줄
-    assert "TIPㅣ이모티콘이름" in t and len(t) < 4096
+    assert f"@{BOT_USERNAME}ㅣ이모티콘이름" in t and len(t) < 4096
     assert "해요" not in t and "주세요" not in t                        # 합쇼체
     assert json.loads(start["reply_markup"])["inline_keyboard"][0][0]["url"] == "https://e.kakao.com/"
     assert json.loads(start["link_preview_options"])["is_disabled"] is True
