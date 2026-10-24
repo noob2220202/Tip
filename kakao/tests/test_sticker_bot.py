@@ -420,3 +420,36 @@ async def test_migration_adds_fingerprint_to_old_db(make_cfg, tmp_path):
     async with db.execute("SELECT fingerprint FROM sticker_sets") as c:
         assert (await c.fetchone())[0] is None
     await db.close()
+
+
+def test_video_conversion_stays_within_memory_budget():
+    """프레임을 한 덩어리로 이어붙이면 변환 하나가 수백 MB를 써서 pm2 메모리 한도 재시작을 부른다."""
+    code = r"""
+import io, resource, sys
+sys.path.insert(0, ".")
+from PIL import Image, ImageDraw
+from bot import media
+frames = []
+for i in range(100):
+    im = Image.new("RGBA", (360, 360), (0, 0, 0, 0)); d = ImageDraw.Draw(im)
+    d.ellipse((10 + i * 3, 40, 150 + i * 3, 180), fill=(255, 80, 80, 255)); frames.append(im)
+b = io.BytesIO(); frames[0].save(b, "WEBP", save_all=True, append_images=frames[1:], duration=50, loop=0, lossless=True)
+data = b.getvalue(); del frames
+base = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss // 1024
+media.to_video_sticker(data)
+print(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss // 1024 - base)
+"""
+    out = subprocess.run(["python3", "-c", code], cwd=KAKAO, capture_output=True, text=True, timeout=120)
+    assert out.returncode == 0, out.stderr
+    assert int(out.stdout.strip()) < 100      # 변환으로 늘어나는 메모리(MB). 수정 전에는 약 220MB
+
+
+def test_ffmpeg_failure_message_has_exit_code(monkeypatch):
+    from bot import media
+
+    real = subprocess.Popen
+    # ffmpeg 대신 바로 실패하는 명령으로 바꿔서 오류 문구를 확인한다 (종료 코드가 있어야 원인을 알 수 있다)
+    monkeypatch.setattr(media.subprocess, "Popen", lambda cmd, **kw: real(["sh", "-c", "cat >/dev/null; exit 3"], **kw))
+    frames, durations = media.load_frames(anim_webp(3))
+    with pytest.raises(media.ConvertError, match="종료 코드 3"):
+        media._encode(media.resample(frames, durations, 30), 30, 30)

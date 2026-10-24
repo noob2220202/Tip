@@ -75,9 +75,11 @@ def resample(frames: list[Image.Image], durations: list[float], fps: int) -> lis
 
 
 def _encode(frames: list[Image.Image], fps: int, crf: int) -> bytes:
+    """프레임을 ffmpeg에 하나씩 흘려보낸다. 전체를 한 덩어리로 이어붙이면 프레임 수만큼 메모리가 더 든다."""
     w, h = frames[0].size
     with tempfile.TemporaryDirectory() as tmp:
         out = Path(tmp) / "out.webm"
+        err_path = Path(tmp) / "err.txt"
         cmd = [
             "ffmpeg", "-y", "-loglevel", "error",
             "-f", "rawvideo", "-pix_fmt", "rgba", "-s", f"{w}x{h}", "-r", str(fps), "-i", "-",
@@ -85,10 +87,25 @@ def _encode(frames: list[Image.Image], fps: int, crf: int) -> bytes:
             "-auto-alt-ref", "0", "-deadline", "good", "-cpu-used", "4", "-an", "-t", f"{MAX_SECONDS}",
             str(out),
         ]
-        raw = b"".join(f.tobytes() for f in frames)
-        p = subprocess.run(cmd, input=raw, capture_output=True)
-        if p.returncode != 0 or not out.exists():
-            raise ConvertError("영상 변환에 실패했어요: " + p.stderr.decode(errors="replace")[-200:])
+        with open(err_path, "wb") as err:
+            # start_new_session: 터미널/프로세스 그룹에 오는 SIGINT가 ffmpeg까지 죽이지 않게 한다
+            p = subprocess.Popen(cmd, stdin=subprocess.PIPE, stderr=err, start_new_session=True)
+            try:
+                last_img, last_raw = None, b""
+                for f in frames:
+                    if f is not last_img:          # 같은 프레임이 이어지면 변환 결과를 재사용
+                        last_img, last_raw = f, f.tobytes()
+                    p.stdin.write(last_raw)
+                p.stdin.close()
+            except BrokenPipeError:
+                pass                                # ffmpeg가 먼저 끝난 경우: 아래에서 종료 코드로 판단
+            finally:
+                if not p.stdin.closed:
+                    p.stdin.close()
+            rc = p.wait()
+        if rc != 0 or not out.exists():
+            tail = err_path.read_bytes().decode(errors="replace")[-200:].strip()
+            raise ConvertError(f"영상 변환에 실패했어요 (ffmpeg 종료 코드 {rc}): {tail}")
         return out.read_bytes()
 
 
