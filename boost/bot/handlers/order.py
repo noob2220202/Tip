@@ -134,9 +134,10 @@ async def got_address(message: Message, db: aiosqlite.Connection, catalog: Catal
     kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=texts.get("cancel_button"), callback_data=f"c:{oid}")]])
     await message.answer(
         texts.get("order_created", id=oid, product=esc(p.name), qty=qty, link=esc(data["link"]), from_addr=addr,
-                  wallet=wallet, amount=money.fmt(p.price_micro * qty), ttl=ttl_min, deadline=hhmm(now + ttl_min * 60)),
+                  amount=money.fmt(p.price_micro * qty), ttl=ttl_min, deadline=hhmm(now + ttl_min * 60)),
         link_preview_options=NO_PREVIEW, reply_markup=kb,
     )
+    await message.answer(texts.get("order_wallet", wallet=wallet))      # 복사하기 쉽게 지갑 주소만 따로 보낸다
 
 
 @router.callback_query(F.data.startswith("c:"))
@@ -186,8 +187,9 @@ async def order_detail(cb: CallbackQuery, db: aiosqlite.Connection, texts: Texts
         return
     extra, kb = "", None
     if o["status"] == "awaiting_payment":
-        extra = (f"\n\n💳 받는 지갑: <code>{wallet}</code>\n금액: <code>{money.fmt(o['amount_micro'])}</code> USDT\n"
-                 f"👛 보내는 주소: <code>{o['from_addr']}</code>\n⏰ 마감: {hhmm(o['expires_at'])}")
+        extra = (f"\n\n💳 금액: <code>{money.fmt(o['amount_micro'])}</code> USDT\n"
+                 f"👛 보내는 주소: <code>{o['from_addr']}</code>\n⏰ 마감: {hhmm(o['expires_at'])} KST\n\n"
+                 f"👇 <b>입금하실 지갑 주소</b>\n<code>{wallet}</code>")
         kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=texts.get("cancel_button"), callback_data=f"c:{o['id']}")]])
     await cb.message.answer(
         texts.get("order_detail", id=o["id"], product=esc(o["product_name"]), qty=o["quantity"], link=esc(o["link"]),

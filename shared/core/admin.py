@@ -38,7 +38,7 @@ def build_router(admin_ids: frozenset[int]) -> Router:
             return
         lines = []
         for r in rows:
-            when = time.strftime("%m-%d %H:%M", time.localtime(r["created_at"]))
+            when = time.strftime("%m-%d %H:%M", time.gmtime(r["created_at"] + 9 * 3600))
             lines.append(f"#{r['id']} {esc(r['title'])} · {b(r['status'])} · 대상 {r['target_count']} · {when}")
         await message.answer("\n".join(lines))
 

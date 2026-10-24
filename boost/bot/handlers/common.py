@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-import time
+from datetime import datetime, timedelta, timezone
 
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, LinkPreviewOptions
 
@@ -25,8 +25,15 @@ def menu_keyboard(texts: Texts) -> InlineKeyboardMarkup:
     ])
 
 
+KST = timezone(timedelta(hours=9))   # 한국은 서머타임이 없어서 고정 오프셋으로 충분하다 (서버 시간대와 tzdata에 의존하지 않음)
+
+
 def hhmm(ts: int) -> str:
-    return time.strftime("%H:%M", time.localtime(ts))
+    return datetime.fromtimestamp(ts, KST).strftime("%H:%M")
+
+
+def md_hhmm(ts: int | None) -> str:
+    return datetime.fromtimestamp(ts, KST).strftime("%m-%d %H:%M") if ts else "-"
 
 
 def order_line(o) -> str:

@@ -9,7 +9,7 @@ from aiogram.filters import BaseFilter, Command, CommandObject
 from aiogram.types import Message
 
 from bot import money, orders
-from bot.handlers.common import STATUS_LABEL, order_line
+from bot.handlers.common import STATUS_LABEL, md_hhmm, order_line
 from bot.notify import Notifier
 from bot.smm import PanelRejected, PanelUncertain, SmmPanel
 from core.config import BotConfig
@@ -49,7 +49,7 @@ async def order(message: Message, db: aiosqlite.Connection, command: CommandObje
     if not o:
         await message.answer("사용법: /order 주문번호")
         return
-    when = lambda t: time.strftime("%m-%d %H:%M", time.localtime(t)) if t else "-"  # noqa: E731
+    when = md_hhmm
     await message.answer(
         f"🧾 <b>주문 #{o['id']}</b> · {STATUS_LABEL.get(o['status'], o['status'])}\n"
         f"<blockquote>사용자 <code>{o['user_id']}</code>\n상품 {esc(o['product_name'])} (서비스 {o['service_id']} × {o['quantity']})\n"

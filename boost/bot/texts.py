@@ -126,15 +126,18 @@ TEXTS = {
     ],
     "order_created": [
         "🧾 <b>주문이 생성되었습니다. (#{id})</b>\n\n"
-        "<blockquote>📦 상품: <b>{product}</b> × <b>{qty}개</b>\n🔗 대상: {link}\n👛 보내는 주소: <code>{from_addr}</code></blockquote>\n"
-        "💳 <b>아래 지갑으로 정확히 입금해 주십시오.</b>\n"
-        "<blockquote>네트워크: <b>TRON (TRC20)</b>\n코인: <b>USDT</b>\n"
-        "받는 지갑: <code>{wallet}</code>\n"
-        "금액: <code>{amount}</code> <b>USDT</b></blockquote>\n"
-        "⏰ <u>{ttl}분 이내</u>에 입금해 주십시오. (~{deadline})\n"
+        "📦 상품: <b>{product}</b> × <b>{qty}개</b>\n"
+        "🔗 대상: {link}\n"
+        "👛 보내는 주소: <code>{from_addr}</code>\n\n"
+        "💳 <b>입금 안내</b>\n"
+        "<blockquote>네트워크: <b>TRON (TRC20)</b>\n"
+        "코인: <b>USDT</b>\n"
+        "금액: <code>{amount}</code> <b>USDT</b></blockquote>\n\n"
+        "⏰ <u>{ttl}분 이내</u>에 입금해 주십시오. (마감 {deadline} KST)\n"
         "✅ 입금이 확인되면 자동으로 알려 드리고 부스트를 진행합니다.\n\n"
-        "<i>지갑 주소와 금액을 누르면 복사됩니다.</i>",
+        "👇 <b>입금하실 지갑 주소</b>는 아래 메시지입니다. 누르면 복사됩니다.",
     ],
+    "order_wallet": ["<code>{wallet}</code>"],
     "cancel_button": ["❌ 주문 취소"],
     "order_cancelled": ["🗑 <b>주문 #{id}이(가) 취소되었습니다.</b>"],
     "cancel_failed": ["ℹ️ 이미 처리되었거나 취소할 수 없는 주문입니다."],

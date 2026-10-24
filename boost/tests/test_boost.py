@@ -200,11 +200,17 @@ async def test_purchase_flow_to_payment_info(env):
     await say(env, 7, WALLET)                                                  # 우리 지갑을 보내는 주소로 쓸 수 없다
     assert "입금받는 지갑과 같은 주소" in env.tg.texts_to(7)[-1]
     await say(env, 7, ALICE)
-    txt = env.tg.texts_to(7)[-1]
-    assert WALLET in txt and "500.00" in txt and "1000개" in txt and ALICE in txt and "https://t.me/mychannel" in txt
+    *_, txt, wallet_msg = env.tg.texts_to(7)
+    assert "500.00" in txt and "1000개" in txt and ALICE in txt and "KST" in txt and WALLET not in txt
+    assert wallet_msg == f"<code>{WALLET}</code>"                              # 지갑 주소는 복사하기 쉽게 따로 보낸다 and "https://t.me/mychannel" in txt
     o = await orders.get(env.db, 1)
     assert (o["status"], o["amount_micro"], o["quantity"], o["from_addr"], o["service_id"]) == \
         ("awaiting_payment", 500_000_000, 1000, ALICE, 11)
+
+
+def test_deadline_is_shown_in_korean_time():
+    from bot.handlers.common import hhmm
+    assert hhmm(0) == "09:00" and hhmm(15 * 3600) == "00:00"
 
 
 async def test_disabled_product_cannot_be_ordered_and_open_limit(env):
