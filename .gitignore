@@ -6,7 +6,6 @@ __pycache__/
 *.db-wal
 *.db-shm
 data/
-config/common.toml
 backups/
 node_modules/
 *.log

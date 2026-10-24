@@ -83,8 +83,8 @@ def session_file(tmp_path):
     return p
 
 
-async def make_bot(make_cfg, bot, kk, session_path):
-    cfg = make_cfg()
+async def make_bot(make_cfg, bot, kk, session_path, channels=()):
+    cfg = make_cfg(channels=channels)
     cfg = cfg.__class__(**{**cfg.__dict__, "env": {"KAKAO_SESSION_PATH": str(session_path)}})
     db = await open_db(cfg.db_path, SCHEMA)
     data = await on_startup(bot, db, cfg)
@@ -324,3 +324,26 @@ async def test_download_returns_whole_body_even_when_it_arrives_in_chunks(monkey
         assert got == data
     finally:
         await runner.cleanup()
+
+
+async def test_channel_gate_shows_join_and_check_buttons_then_resumes(make_cfg, bot, tg, kk, session_file):
+    from core.config import Channel
+
+    kk.packs["gate"] = ("게이트", [anim_webp()])
+    ch = Channel(chat_id="@GGULLTIP", url="https://t.me/GGULLTIP", title="📢 채널 가입하기")
+    dp, db, _ = await make_bot(make_cfg, bot, kk, session_file, channels=[ch])
+
+    await dp.feed_update(bot, msg_update(31, "https://e.kakao.com/t/gate"))
+    m = tg.of("sendMessage")[-1]
+    kb = json.loads(m["reply_markup"])["inline_keyboard"]
+    assert kb[0][0] == {"text": "📢 채널 가입하기", "url": "https://t.me/GGULLTIP"}
+    assert kb[1][0] == {"text": "✅ 가입을 완료했습니다", "callback_data": "gate:check"}
+    assert not tg.sets                                            # 가입 전에는 변환하지 않는다
+
+    from tests.conftest import cb_update
+    await dp.feed_update(bot, cb_update(31, "gate:check"))        # 아직 미가입
+    assert not tg.sets
+    tg.members[("@GGULLTIP", 31)] = "member"
+    await dp.feed_update(bot, cb_update(31, "gate:check"))        # 가입 후 확인 → 처음 요청을 이어서 처리
+    assert f"tip_31_gate_by_{BOT_USERNAME}" in tg.sets
+    await db.close()

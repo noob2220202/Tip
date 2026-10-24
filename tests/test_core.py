@@ -181,3 +181,11 @@ def test_ecosystem_config():
     assert [a["name"] for a in apps] == ["kakao"]
     assert apps[0]["script"] == "main.py" and apps[0]["interpreter"] == "python3"
     assert (ROOT / apps[0]["script"]).exists()
+
+
+def test_repo_common_toml_requires_channel():
+    from core.config import load_common
+
+    c = load_common(ROOT / "config" / "common.toml")
+    assert [(x.chat_id, x.url) for x in c.channels] == [("@GGULLTIP", "https://t.me/GGULLTIP")]
+    assert c.fail_mode in ("allow", "block")

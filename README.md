@@ -16,7 +16,6 @@ sudo bash scripts/setup_server.sh     # Python/pip/ffmpeg/sqlite3/Node/pm2, ufw,
 pm2 startup                            # 출력되는 명령을 1회 실행
 
 cp .env.example .env                   # BOT_TOKEN, ADMIN_IDS 입력
-cp config/common.example.toml config/common.toml   # 필수 채널 등 (없으면 기본값으로 동작)
 
 # 카카오 로그인 (1회) — 아래 "카카오 세션 준비" 참고
 pip install --break-system-packages -r requirements-login.txt
@@ -43,6 +42,8 @@ run_bot(ROOT, routers=[router], texts=TEXTS, schema=SCHEMA, on_startup=on_startu
 3. `.env`를 채우고 `ecosystem.config.js`의 앱 이름을 바꾼 뒤 `pm2 start ecosystem.config.js`.
 
 ## 공통 설정 (`config/common.toml`)
+
+현재 필수 가입 채널은 [@GGULLTIP](https://t.me/GGULLTIP)입니다. 가입하지 않은 사용자에게는 채널 가입 버튼과 `가입을 완료했습니다` 확인 버튼이 나오고, 확인을 통과하면 처음 보낸 요청을 이어서 처리합니다. 채널을 바꾸거나 늘리려면 `[[gate.channels]]` 블록을 수정·추가하고 `pm2 restart kakao`를 실행합니다.
 
 | 항목 | 설명 |
 |---|---|
