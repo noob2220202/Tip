@@ -15,8 +15,11 @@ from core.texts import Texts
 
 router = Router(name="boost_calc")
 
+KIND = {False: "채널", True: "그룹"}
+
 
 class Calc(StatesGroup):
+    kind = State()
     subs = State()
     current = State()
 
@@ -27,8 +30,21 @@ def parse_int(text: str) -> int | None:
 
 
 async def begin(target: Message, catalog: Catalog, texts: Texts, state: FSMContext) -> None:
+    await state.set_state(Calc.kind)
+    kb = InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text=texts.get("calc_btn_channel"), callback_data="ck:ch"),
+        InlineKeyboardButton(text=texts.get("calc_btn_group"), callback_data="ck:gr"),
+    ]])
+    await target.answer(texts.get("calc_ask_kind", target=catalog.level_target), reply_markup=kb)
+
+
+@router.callback_query(Calc.kind, F.data.in_({"ck:ch", "ck:gr"}))
+async def got_kind(cb: CallbackQuery, texts: Texts, state: FSMContext) -> None:
+    group = cb.data == "ck:gr"
+    await state.update_data(group=group)
     await state.set_state(Calc.subs)
-    await target.answer(texts.get("calc_ask_subs", target=catalog.level_target))
+    await cb.message.answer(texts.get("calc_ask_subs", kind=KIND[group], unit="멤버" if group else "구독자"))
+    await cb.answer()
 
 
 @router.message(Command("calc"))
@@ -50,7 +66,8 @@ async def got_subs(message: Message, texts: Texts, state: FSMContext) -> None:
         return
     await state.update_data(subs=n)
     await state.set_state(Calc.current)
-    await message.answer(texts.get("calc_ask_cur", subs=f"{n:,}"))
+    unit = "멤버" if (await state.get_data())["group"] else "구독자"
+    await message.answer(texts.get("calc_ask_cur", subs=f"{n:,}", unit=unit))
 
 
 @router.message(Calc.current, F.text)
@@ -59,12 +76,14 @@ async def got_current(message: Message, catalog: Catalog, texts: Texts, state: F
     if cur is None:
         await message.answer(texts.get("calc_bad_number"))
         return
-    subs = (await state.get_data())["subs"]
+    data = await state.get_data()
+    subs, group = data["subs"], data["group"]
     await state.clear()
-    rule = levels.LevelRule(catalog.level_target, catalog.level_divisor)
+    rule = levels.LevelRule(catalog.level_target, catalog.level_divisor_group if group else catalog.level_divisor)
     need = levels.boosts_required(rule.target, subs, rule)
     left = max(need - cur, 0)
-    common = dict(target=rule.target, subs=f"{subs:,}", need=f"{need:,}", cur=f"{cur:,}")
+    common = dict(target=rule.target, subs=f"{subs:,}", need=f"{need:,}", cur=f"{cur:,}",
+                  kind=KIND[group], unit="멤버" if group else "구독자")
     if left == 0:
         await message.answer(texts.get("calc_reached", **common))
         return

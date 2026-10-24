@@ -11,7 +11,8 @@ max = 1000          # 한 주문의 최대 부스트 개수
 
 [levels]            # 10레벨 계산기
 target = 10         # 목표 레벨
-divisor = 250       # 계수 = 구독자 수 // divisor + 1
+divisor = 250       # 채널 계수 = 구독자 수 // divisor + 1
+group_divisor = 25  # 그룹 계수 = 멤버 수 // group_divisor + 1
 
 [[products]]
 id = "b10"

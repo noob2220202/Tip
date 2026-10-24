@@ -164,6 +164,8 @@ def test_levels():
     r = levels.LevelRule()
     assert levels.boosts_required(1, 1000, r) == 3 and levels.boosts_required(9, 1000, r) == 35
     assert levels.boosts_required(10, 1000, r) == 50 and levels.boosts_required(10, 0, r) == 10
+    g = levels.LevelRule(10, 25)                                               # 그룹: 멤버 // 25 + 1
+    assert levels.boosts_required(10, 1000, g) == 410 and levels.boosts_required(1, 1000, g) == 21
 
 
 def test_default_catalog_loads_and_ships_disabled():
@@ -369,18 +371,29 @@ async def test_tron_outage_alerts_admin_once(env):
 
 # ---------- 계산기, 관리자 ----------
 
-async def test_calculator(env):
+async def test_calculator_channel_and_group_differ(env):
     await say(env, 7, "/calc")
+    assert env.tg.of("sendMessage")[-1]["reply_markup"]                       # 채널/그룹 선택 버튼
+    await press(env, 7, "ck:ch")
     await say(env, 7, "글자")
     assert "숫자만" in env.tg.texts_to(7)[-1]
     await say(env, 7, "1,000")
     await say(env, 7, "20")
-    txt = env.tg.texts_to(7)[-1]
-    plain = txt.replace("<b>", "").replace("</b>", "")
-    assert "필요 부스트: 50개" in plain and "추가로 필요한 부스트: 30개" in plain     # 필요 50 − 보유 20
-    assert "가장 저렴한 구성" not in txt and "10개 ~ 1000개" in txt
+    plain = env.tg.texts_to(7)[-1].replace("<b>", "").replace("</b>", "")
+    assert "대상: 채널 · 구독자 1,000명" in plain
+    assert "필요 부스트: 50개" in plain and "추가로 필요한 부스트: 30개" in plain     # 계수 1000//250+1=5 → 5×10, 보유 20 제외
+    assert "가장 저렴한 구성" not in plain and "10개 ~ 1000개" in plain
 
-    await say(env, 7, "/calc"); await say(env, 7, "0"); await say(env, 7, "10")
+    await say(env, 7, "/calc")
+    await press(env, 7, "ck:gr")
+    await say(env, 7, "1000")
+    assert "멤버 수" in env.tg.texts_to(7)[-1]
+    await say(env, 7, "20")
+    plain = env.tg.texts_to(7)[-1].replace("<b>", "").replace("</b>", "")
+    assert "대상: 그룹 · 멤버 1,000명" in plain
+    assert "필요 부스트: 410개" in plain and "추가로 필요한 부스트: 390개" in plain   # 계수 1000//25+1=41 → 41×10
+
+    await say(env, 7, "/calc"); await press(env, 7, "ck:ch"); await say(env, 7, "0"); await say(env, 7, "10")
     assert "모두 채우셨습니다" in env.tg.texts_to(7)[-1]
 
 

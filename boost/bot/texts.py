@@ -128,29 +128,36 @@ TEXTS = {
         "<blockquote>📦 {product} × {qty}개\n🔗 {link}\n💰 {amount} USDT\n📌 상태: <b>{status}</b></blockquote>{extra}",
     ],
     # 계산기
-    "calc_ask_subs": [
+    "calc_ask_kind": [
         "🧮 <b>{target}레벨 계산기</b>\n\n"
-        "먼저 부스트를 올릴 <b>그룹·채널의 현재 구독자(멤버) 수</b>를 숫자로 보내 주십시오.\n"
-        "<blockquote>필요한 부스트 개수는 구독자 수에 따라 달라집니다.</blockquote>\n"
+        "부스트를 올릴 대상이 <b>채널</b>인지 <b>그룹</b>인지 선택해 주십시오.\n"
+        "<blockquote>채널과 그룹은 필요한 부스트 개수를 계산하는 기준이 서로 다릅니다.</blockquote>\n"
         "취소하시려면 /cancel 을 입력해 주십시오.",
     ],
+    "calc_btn_channel": ["📢 채널"],
+    "calc_btn_group": ["👥 그룹"],
+    "calc_ask_subs": [
+        "📌 <b>{kind}</b>로 계산합니다.\n\n"
+        "현재 <b>{unit} 수</b>를 숫자로 보내 주십시오.\n"
+        "<blockquote>필요한 부스트 개수는 {unit} 수에 따라 달라집니다.</blockquote>",
+    ],
     "calc_ask_cur": [
-        "👍 구독자 수 <b>{subs}명</b>으로 계산합니다.\n\n"
+        "👍 {unit} 수 <b>{subs}명</b>으로 계산합니다.\n\n"
         "이어서 <b>현재 보유한 부스트 개수</b>를 숫자로 보내 주십시오. 없으시면 <code>0</code>을 보내 주십시오.",
     ],
     "calc_bad_number": ["❗ 숫자만 보내 주십시오. 예) <code>1200</code>"],
     "calc_result": [
         "🧮 <b>{target}레벨 계산 결과</b>\n\n"
-        "<blockquote>👥 구독자: <b>{subs}명</b>\n"
+        "<blockquote>📌 대상: <b>{kind}</b> · {unit} <b>{subs}명</b>\n"
         "🎯 {target}레벨 필요 부스트: <b>{need}개</b>\n"
         "🚀 현재 부스트: <b>{cur}개</b>\n"
         "➕ <u>추가로 필요한 부스트: <b>{left}개</b></u></blockquote>\n"
         "{note}"
-        "\n<i>※ 필요 개수는 현재 알려진 계산 방식 기준의 추정치입니다. 실제 수치는 채널의 부스트 화면에 표시되는 값이 우선합니다.</i>",
+        "\n<i>※ 필요 개수는 현재 알려진 계산 방식 기준의 추정치입니다. 실제 수치는 채널·그룹의 부스트 화면에 표시되는 값이 우선합니다.</i>",
     ],
     "calc_reached": [
         "🎉 <b>이미 {target}레벨에 필요한 부스트({need}개)를 모두 채우셨습니다!</b>\n\n"
-        "<blockquote>👥 구독자: <b>{subs}명</b>\n🚀 현재 부스트: <b>{cur}개</b></blockquote>",
+        "<blockquote>📌 대상: <b>{kind}</b> · {unit} <b>{subs}명</b>\n🚀 현재 부스트: <b>{cur}개</b></blockquote>",
     ],
     "calc_note": [
         "💡 주문은 한 번에 <b>{min}개 ~ {max}개</b>까지 가능합니다. 더 필요하시면 나눠서 주문해 주십시오.\n",

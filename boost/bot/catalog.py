@@ -29,7 +29,8 @@ class Product:
 class Catalog:
     products: tuple[Product, ...]
     level_target: int = 10
-    level_divisor: int = 250
+    level_divisor: int = 250          # 채널: 계수 = 구독자 // 250 + 1
+    level_divisor_group: int = 25     # 그룹: 계수 = 멤버 // 25 + 1
     min_qty: int = 10        # 한 주문의 최소/최대 부스트 개수 ([order] 로 바꿀 수 있다)
     max_qty: int = 1000
 
@@ -58,7 +59,7 @@ def load_catalog(path: Path | str | None = None) -> Catalog:
     lv = data.get("levels", {})
     od = data.get("order", {})
     cat = Catalog(tuple(products), int(lv.get("target", 10)), int(lv.get("divisor", 250)),
-                  int(od.get("min", 10)), int(od.get("max", 1000)))
+                  int(lv.get("group_divisor", 25)), int(od.get("min", 10)), int(od.get("max", 1000)))
     if not 1 <= cat.min_qty <= cat.max_qty:
         raise ValueError("[order] min/max 설정이 올바르지 않아요")
     return cat
