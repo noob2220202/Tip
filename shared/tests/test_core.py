@@ -245,6 +245,8 @@ def test_tron_address_validation_and_hex_roundtrip():
     assert not tron.is_tron_address("T" + "1" * 33) and not tron.is_tron_address("") and not tron.is_tron_address(usdt + "1")
     assert tron.hex_to_address("41a614f803b6fd780986a42c78ec9c7f77e6ded13c") == "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t"
     assert tron.hex_to_address("a614f803b6fd780986a42c78ec9c7f77e6ded13c") == usdt     # 41 접두어가 없어도 된다
+    assert tron.address_to_hex(usdt) == "41a614f803b6fd780986a42c78ec9c7f77e6ded13c" and tron.address_to_hex("Tbad") is None
+    assert tron.hex_to_address(tron.address_to_hex(usdt)) == usdt
     assert tron.hex_to_address("zz") is None and tron.hex_to_address("42" + "0" * 40) is None
 
 

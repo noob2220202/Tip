@@ -6,9 +6,10 @@ from dataclasses import dataclass
 
 import aiohttp
 
-from core.tron import hex_to_address
+from core.tron import address_to_hex, hex_to_address
 
 USDT_CONTRACT = "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t"
+USDT_HEX = address_to_hex(USDT_CONTRACT)
 PAGE_LIMIT = 200
 MAX_PAGES = 5
 BALANCE_TTL = 15   # 같은 주소를 연달아 조회할 때 TronGrid를 아끼려고 잠깐 기억해 둔다(초)
@@ -29,6 +30,14 @@ class Deposit:
     sender: str
     value: int      # 마이크로 단위
     ts_ms: int      # 블록 시간
+    to: str = ""    # 받은 지갑 주소 (블록을 훑을 때 채운다)
+
+
+@dataclass(frozen=True)
+class Block:
+    number: int
+    ts_ms: int
+    txs: list
 
 
 @dataclass(frozen=True)
@@ -67,6 +76,48 @@ class TronReader:
             raise TronError("TronGrid 응답이 올바르지 않아요")
         return body
 
+    async def _post(self, path: str, body: dict) -> dict:
+        try:
+            async with self._http().post(f"{self.base}{path}", json=body) as r:
+                if r.status == 429:
+                    raise RateLimited("TronGrid 호출 한도 초과")
+                if r.status != 200:
+                    raise TronError(f"TronGrid 응답 코드 {r.status}")
+                out = await r.json(content_type=None)
+        except (aiohttp.ClientError, asyncio.TimeoutError, ValueError) as e:
+            raise TronError(f"TronGrid 요청 실패: {e}") from e
+        if not isinstance(out, dict) or "Error" in out:
+            raise TronError(f"TronGrid 응답이 올바르지 않아요: {str(out)[:100]}")
+        return out
+
+    @staticmethod
+    def _block(body: dict) -> Block | None:
+        """블록 응답을 읽는다. 아직 생기지 않은 블록은 빈 객체({})로 오므로 None."""
+        try:
+            h = body["block_header"]["raw_data"]
+            return Block(int(h["number"]), int(h["timestamp"]), body.get("transactions") or [])
+        except (KeyError, ValueError, TypeError):
+            if body:
+                raise TronError("블록 응답을 읽지 못했어요") from None
+            return None
+
+    async def head_block(self) -> int:
+        b = self._block(await self._post("/wallet/getnowblock", {}))
+        if b is None:
+            raise TronError("최신 블록을 가져오지 못했어요")
+        return b.number
+
+    async def block(self, number: int) -> Block | None:
+        return self._block(await self._post("/wallet/getblockbynum", {"num": number}))
+
+    async def solidified(self, txid: str) -> bool:
+        """블록이 확정(solidity)됐는지. 확정된 거래만 이 조회에서 내역이 나온다."""
+        return bool((await self._post("/walletsolidity/gettransactioninfobyid", {"value": txid})).get("id"))
+
+    async def tx_exists(self, txid: str) -> bool:
+        """아직 확정 전이라도 노드에 거래가 있는지. 블록이 뒤집혀 사라졌다면 False."""
+        return bool((await self._post("/wallet/gettransactionbyid", {"value": txid})).get("txID"))
+
     async def _pages(self, path: str, params: dict) -> list[dict]:
         rows: list[dict] = []
         params = {**params, "limit": PAGE_LIMIT, "order_by": "block_timestamp,asc", "only_to": "true",
@@ -95,12 +146,12 @@ class TronReader:
         out += [d for d in (_parse_trx(r, address) for r in trx_rows) if d]
         return sorted(out, key=lambda d: d.ts_ms)
 
-    async def balance(self, address: str, now: float = 0.0) -> Balance:
+    async def balance(self, address: str, now: float = 0.0, fresh: bool = False) -> Balance:
         import time
 
         now = now or time.time()
         hit = self._cache.get(address)
-        if hit and now - hit[0] < BALANCE_TTL:
+        if hit and now - hit[0] < BALANCE_TTL and not fresh:
             return hit[1]
         body = await self._get(f"/v1/accounts/{address}")
         data = (body.get("data") or [{}])[0]     # 아직 활성화되지 않은 주소는 data가 비어 있다 → 잔액 0
@@ -145,3 +196,38 @@ def _parse_trx(row: dict, address: str) -> Deposit | None:
         return Deposit(row["txID"], "TRX", sender, int(v["amount"]), int(row["block_timestamp"]))
     except (KeyError, ValueError, TypeError, IndexError):
         return None
+
+
+def scan_block(block: Block, watch: dict[str, str]) -> list[Deposit]:
+    """블록 안의 거래에서 감시 중인 주소로 들어온 입금을 찾는다. watch는 {hex 주소: 'T...' 주소}.
+
+    TRX는 일반 전송, USDT는 컨트랙트의 transfer / transferFrom 호출 데이터에서 읽는다.
+    실패한 거래는 건너뛴다. (일괄 전송 컨트랙트처럼 호출 데이터에 안 드러나는 입금은 못 찾는다 → 잔액 대조가 보충)
+    받은 지갑은 Deposit.to에 담는다.
+    """
+    out: list[Deposit] = []
+    for tx in block.txs:
+        try:
+            if ((tx.get("ret") or [{}])[0]).get("contractRet") != "SUCCESS":
+                continue
+            c = tx["raw_data"]["contract"][0]
+            v = c["parameter"]["value"]
+            kind = c.get("type")
+            if kind == "TransferContract":
+                to, amount, sender, token = v["to_address"].lower(), int(v["amount"]), v["owner_address"], "TRX"
+            elif kind == "TriggerSmartContract" and (v.get("contract_address") or "").lower() == USDT_HEX:
+                data = (v.get("data") or "").lower()
+                if data.startswith("a9059cbb") and len(data) >= 136:           # transfer(to, amount)
+                    to, amount, sender = "41" + data[32:72], int(data[72:136], 16), v["owner_address"]
+                elif data.startswith("23b872dd") and len(data) >= 200:         # transferFrom(from, to, amount)
+                    sender, to, amount = "41" + data[32:72], "41" + data[96:136], int(data[136:200], 16)
+                else:
+                    continue
+                token = "USDT"
+            else:
+                continue
+            if to in watch and amount > 0:
+                out.append(Deposit(tx["txID"], token, hex_to_address(sender) or str(sender), amount, block.ts_ms, watch[to]))
+        except (KeyError, ValueError, TypeError, IndexError, AttributeError):
+            continue
+    return out

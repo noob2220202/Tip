@@ -39,3 +39,13 @@ def hex_to_address(h: str) -> str | None:
         n, r = divmod(n, 58)
         out = _B58[r] + out
     return out
+
+
+def address_to_hex(addr: str) -> str | None:
+    """'T...' 주소를 hex('41' + 40자, 소문자)로. 올바른 주소가 아니면 None. 블록 안의 거래와 대조할 때 쓴다."""
+    if not is_tron_address(addr):
+        return None
+    n = 0
+    for ch in addr:
+        n = n * 58 + _B58.index(ch)
+    return n.to_bytes(25, "big")[:21].hex()

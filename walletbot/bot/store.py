@@ -6,6 +6,8 @@ import time
 
 import aiosqlite
 
+from core.tron import address_to_hex
+
 MAX_WALLETS_PER_USER = 3
 MAX_RULES_PER_USER = 3
 MAX_DAILY_TIMES = 3
@@ -22,10 +24,36 @@ CREATE TABLE IF NOT EXISTS wallets (
 );
 CREATE INDEX IF NOT EXISTS idx_wallets_addr ON wallets(address);
 
--- 주소별 조회 위치. 같은 주소를 여러 사람이 등록해도 TronGrid는 한 번만 조회한다
+-- 주소별 상태. 같은 주소를 여러 사람이 등록해도 한 번만 다룬다.
+-- cursor_ms: 내역 조회(놓친 입금 보충)로 확인한 위치, usdt/trx/checked_at: 마지막 잔액 대조
 CREATE TABLE IF NOT EXISTS watch_state (
-  address    TEXT PRIMARY KEY,
-  cursor_ms  INTEGER NOT NULL
+  address     TEXT PRIMARY KEY,
+  cursor_ms   INTEGER NOT NULL,
+  usdt        INTEGER,
+  trx         INTEGER,
+  checked_at  INTEGER NOT NULL DEFAULT 0
+);
+
+-- 블록 스캔 위치(한 줄). 재시작하면 여기서부터 이어서 훑는다
+CREATE TABLE IF NOT EXISTS scan_state (
+  id          INTEGER PRIMARY KEY CHECK (id = 1),
+  last_block  INTEGER NOT NULL,
+  ts_ms       INTEGER NOT NULL
+);
+
+-- 블록에 들어간 직후 알렸고 아직 확정 여부를 확인하지 못한 입금
+CREATE TABLE IF NOT EXISTS pending (
+  wallet_id   INTEGER NOT NULL,
+  txid        TEXT NOT NULL,
+  token       TEXT NOT NULL,
+  user_id     INTEGER NOT NULL,
+  message_id  INTEGER NOT NULL,
+  value       INTEGER NOT NULL,
+  sender      TEXT NOT NULL,
+  ts_ms       INTEGER NOT NULL,
+  first_seen  INTEGER NOT NULL,
+  next_check  INTEGER NOT NULL,
+  PRIMARY KEY (wallet_id, txid, token)
 );
 
 -- 이미 알린 입금. 겹쳐 조회해도 같은 입금을 두 번 알리지 않는다
@@ -92,7 +120,7 @@ async def add_wallet(db: aiosqlite.Connection, user_id: int, address: str, label
                                (user_id, address, label, now))
     except sqlite3.IntegrityError:
         return None
-    # 이미 지켜보던 주소면 조회 위치를 그대로 두고, 새 주소면 지금부터 본다(과거 입금은 알리지 않는다)
+    # 이미 지켜보던 주소면 상태를 그대로 두고, 새 주소면 지금부터 본다(과거 입금은 알리지 않는다)
     await db.execute("INSERT OR IGNORE INTO watch_state(address, cursor_ms) VALUES(?,?)", (address, now * 1000))
     await db.commit()
     return cur.lastrowid
@@ -108,6 +136,7 @@ async def delete_wallet(db: aiosqlite.Connection, wallet_id: int) -> None:
         row = await cur.fetchone()
     await db.execute("DELETE FROM wallets WHERE id=?", (wallet_id,))
     await db.execute("DELETE FROM notified WHERE wallet_id=?", (wallet_id,))
+    await db.execute("DELETE FROM pending WHERE wallet_id=?", (wallet_id,))
     if row and not await address_is_watched(db, row["address"]):
         await db.execute("DELETE FROM watch_state WHERE address=?", (row["address"],))
     await db.commit()
@@ -121,6 +150,11 @@ async def watched_addresses(db: aiosqlite.Connection) -> list[aiosqlite.Row]:
         " JOIN watch_state s ON s.address = w.address GROUP BY w.address"
     ) as cur:
         return list(await cur.fetchall())
+
+
+async def watched_hex(db: aiosqlite.Connection) -> dict[str, str]:
+    """블록을 훑을 때 쓰는 {hex 주소: 'T...' 주소}. 활성 사용자의 지갑만."""
+    return {address_to_hex(r["address"]): r["address"] for r in await watched_addresses(db)}
 
 
 async def wallets_at(db: aiosqlite.Connection, address: str) -> list[aiosqlite.Row]:
@@ -243,3 +277,62 @@ async def mark_daily_sent(db: aiosqlite.Connection, user_id: int, hhmm: str, day
                            (day, user_id, hhmm, day))
     await db.commit()
     return cur.rowcount == 1
+
+
+# ---- 블록 스캔 위치 · 잔액 대조 · 확정 대기 ----
+
+async def get_scan(db: aiosqlite.Connection) -> aiosqlite.Row | None:
+    async with db.execute("SELECT * FROM scan_state WHERE id=1") as cur:
+        return await cur.fetchone()
+
+
+async def set_scan(db: aiosqlite.Connection, last_block: int, ts_ms: int) -> None:
+    await db.execute(
+        "INSERT INTO scan_state(id, last_block, ts_ms) VALUES(1,?,?)"
+        " ON CONFLICT(id) DO UPDATE SET last_block=excluded.last_block, ts_ms=excluded.ts_ms",
+        (last_block, ts_ms),
+    )
+    await db.commit()
+
+
+async def due_balance(db: aiosqlite.Connection, before: int, limit: int) -> list[aiosqlite.Row]:
+    """잔액 대조 차례가 된 주소(가장 오래 안 본 것부터)."""
+    async with db.execute(
+        "SELECT w.address AS address, s.cursor_ms AS cursor_ms, s.usdt AS usdt, s.trx AS trx FROM wallets w"
+        " JOIN users u ON u.user_id = w.user_id AND u.is_active = 1"
+        " JOIN watch_state s ON s.address = w.address WHERE s.checked_at <= ? GROUP BY w.address"
+        " ORDER BY s.checked_at LIMIT ?",
+        (before, limit),
+    ) as cur:
+        return list(await cur.fetchall())
+
+
+async def set_balance(db: aiosqlite.Connection, address: str, usdt: int, trx: int, now: int) -> None:
+    await db.execute("UPDATE watch_state SET usdt=?, trx=?, checked_at=? WHERE address=?", (usdt, trx, now, address))
+    await db.commit()
+
+
+async def add_pending(db: aiosqlite.Connection, wallet_id: int, user_id: int, message_id: int, d, now: int) -> None:
+    await db.execute(
+        "INSERT OR REPLACE INTO pending(wallet_id, txid, token, user_id, message_id, value, sender, ts_ms,"
+        " first_seen, next_check) VALUES(?,?,?,?,?,?,?,?,?,?)",
+        (wallet_id, d.txid, d.token, user_id, message_id, d.value, d.sender, d.ts_ms, now, now + 20),
+    )
+    await db.commit()
+
+
+async def due_pending(db: aiosqlite.Connection, now: int, limit: int = 50) -> list[aiosqlite.Row]:
+    async with db.execute("SELECT * FROM pending WHERE next_check<=? ORDER BY next_check LIMIT ?", (now, limit)) as cur:
+        return list(await cur.fetchall())
+
+
+async def delay_pending(db: aiosqlite.Connection, row, next_check: int) -> None:
+    await db.execute("UPDATE pending SET next_check=? WHERE wallet_id=? AND txid=? AND token=?",
+                     (next_check, row["wallet_id"], row["txid"], row["token"]))
+    await db.commit()
+
+
+async def delete_pending(db: aiosqlite.Connection, row) -> None:
+    await db.execute("DELETE FROM pending WHERE wallet_id=? AND txid=? AND token=?",
+                     (row["wallet_id"], row["txid"], row["token"]))
+    await db.commit()

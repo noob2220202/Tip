@@ -18,24 +18,37 @@ class Notifier:
     def __init__(self, bot: Bot, db: aiosqlite.Connection, admin_ids=()):
         self.bot, self.db, self.admin_ids = bot, db, tuple(admin_ids)
 
-    async def send(self, user_id: int, text: str, markup: InlineKeyboardMarkup | None = None) -> bool:
-        """보냈으면 True. 사용자가 봇을 막았으면 비활성 처리하고 False(다시 시도하지 않는다). 그 밖의 실패도 False."""
+    async def send_id(self, user_id: int, text: str, markup: InlineKeyboardMarkup | None = None) -> int | None:
+        """보낸 메시지 id. 사용자가 봇을 막았으면 비활성 처리하고 None(다시 시도하지 않는다). 그 밖의 실패도 None."""
         for attempt in range(2):
             try:
-                await self.bot.send_message(user_id, text, reply_markup=markup,
-                                            link_preview_options=LinkPreviewOptions(is_disabled=True))
-                return True
+                msg = await self.bot.send_message(user_id, text, reply_markup=markup,
+                                                  link_preview_options=LinkPreviewOptions(is_disabled=True))
+                return msg.message_id
             except TelegramForbiddenError:
                 await users.set_active(self.db, user_id, False)
-                return False
+                return None
             except TelegramRetryAfter as e:
                 if attempt:
-                    return False
+                    return None
                 await asyncio.sleep(min(e.retry_after, 30))
             except TelegramAPIError as e:
                 log.warning("알림 전송 실패 user=%s: %s", user_id, e)
-                return False
-        return False
+                return None
+        return None
+
+    async def send(self, user_id: int, text: str, markup: InlineKeyboardMarkup | None = None) -> bool:
+        return await self.send_id(user_id, text, markup) is not None
+
+    async def edit(self, user_id: int, message_id: int, text: str) -> bool:
+        """이미 보낸 알림을 고친다(확정 표시 등). 지워졌거나 못 고치면 False."""
+        try:
+            await self.bot.edit_message_text(text, chat_id=user_id, message_id=message_id,
+                                             link_preview_options=LinkPreviewOptions(is_disabled=True))
+            return True
+        except TelegramAPIError as e:
+            log.warning("알림 수정 실패 user=%s: %s", user_id, e)
+            return False
 
     async def admins(self, text: str) -> None:
         for a in self.admin_ids:

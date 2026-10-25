@@ -159,7 +159,8 @@ def added(w) -> str:
 
 # ---- 입금 알림 ----
 
-def deposit_text(w, d: Deposit, quote: Quote | None) -> str:
+def deposit_text(w, d: Deposit, quote: Quote | None, status: str = "confirmed") -> str:
+    """status: confirmed(확정) · pending(블록에 들어감, 확정 대기) · dropped(블록이 뒤집혀 취소) · unknown(확정 확인 지연)"""
     amount = money.fmt(d.value)
     approx = ""
     if quote:
@@ -169,12 +170,18 @@ def deposit_text(w, d: Deposit, quote: Quote | None) -> str:
     if d.value < SMALL:
         warn = ("\n\n⚠️ <b>소액 입금</b>입니다. 내 주소와 비슷한 주소로 위장해 송금을 유도하는 스팸일 수 있으니, "
                 "<b>보낸 주소로 송금하지 마십시오.</b>")
+    title, badge = {
+        "confirmed": ("📥 <b>입금 알림</b>", "\n✅ <b>확정</b>"),
+        "pending": ("📥 <b>입금 알림</b>", "\n⏳ <b>확정 대기 중</b> — 블록에 들어갔고 약 1분 뒤 확정됩니다."),
+        "dropped": ("📥 <b>입금 알림 (취소)</b>", "\n❌ <b>취소됨</b> — 블록이 바뀌어 이 입금은 사라졌습니다. 입금으로 보지 마십시오."),
+        "unknown": ("📥 <b>입금 알림</b>", "\n⚠️ 확정 여부를 확인하지 못했습니다. TRONSCAN에서 확인해 주십시오."),
+    }[status]
     return (
-        f"📥 <b>입금 알림</b> — {name_of(w)}\n\n"
+        f"{title} — {name_of(w)}\n\n"
         f"<blockquote>💰 <b>+{amount} {d.token}</b>{approx}\n"
         f"👤 보낸 주소 <code>{esc(d.sender)}</code>\n"
         f"🕒 {kst(d.ts_ms / 1000)} (KST)\n"
-        f"🔗 <a href=\"{SCAN_TX.format(d.txid)}\">거래 내역 보기</a></blockquote>{warn}"
+        f"🔗 <a href=\"{SCAN_TX.format(d.txid)}\">거래 내역 보기</a></blockquote>{badge}{warn}"
     )
 
 
