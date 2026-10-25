@@ -41,21 +41,6 @@ CREATE TABLE IF NOT EXISTS scan_state (
   ts_ms       INTEGER NOT NULL
 );
 
--- 블록에 들어간 직후 알렸고 아직 확정 여부를 확인하지 못한 입금
-CREATE TABLE IF NOT EXISTS pending (
-  wallet_id   INTEGER NOT NULL,
-  txid        TEXT NOT NULL,
-  token       TEXT NOT NULL,
-  user_id     INTEGER NOT NULL,
-  message_id  INTEGER NOT NULL,
-  value       INTEGER NOT NULL,
-  sender      TEXT NOT NULL,
-  ts_ms       INTEGER NOT NULL,
-  first_seen  INTEGER NOT NULL,
-  next_check  INTEGER NOT NULL,
-  PRIMARY KEY (wallet_id, txid, token)
-);
-
 -- 이미 알린 입금. 겹쳐 조회해도 같은 입금을 두 번 알리지 않는다
 CREATE TABLE IF NOT EXISTS notified (
   wallet_id  INTEGER NOT NULL,
@@ -136,7 +121,6 @@ async def delete_wallet(db: aiosqlite.Connection, wallet_id: int) -> None:
         row = await cur.fetchone()
     await db.execute("DELETE FROM wallets WHERE id=?", (wallet_id,))
     await db.execute("DELETE FROM notified WHERE wallet_id=?", (wallet_id,))
-    await db.execute("DELETE FROM pending WHERE wallet_id=?", (wallet_id,))
     if row and not await address_is_watched(db, row["address"]):
         await db.execute("DELETE FROM watch_state WHERE address=?", (row["address"],))
     await db.commit()
@@ -279,7 +263,7 @@ async def mark_daily_sent(db: aiosqlite.Connection, user_id: int, hhmm: str, day
     return cur.rowcount == 1
 
 
-# ---- 블록 스캔 위치 · 잔액 대조 · 확정 대기 ----
+# ---- 블록 스캔 위치 · 잔액 대조 ----
 
 async def get_scan(db: aiosqlite.Connection) -> aiosqlite.Row | None:
     async with db.execute("SELECT * FROM scan_state WHERE id=1") as cur:
@@ -309,30 +293,4 @@ async def due_balance(db: aiosqlite.Connection, before: int, limit: int) -> list
 
 async def set_balance(db: aiosqlite.Connection, address: str, usdt: int, trx: int, now: int) -> None:
     await db.execute("UPDATE watch_state SET usdt=?, trx=?, checked_at=? WHERE address=?", (usdt, trx, now, address))
-    await db.commit()
-
-
-async def add_pending(db: aiosqlite.Connection, wallet_id: int, user_id: int, message_id: int, d, now: int) -> None:
-    await db.execute(
-        "INSERT OR REPLACE INTO pending(wallet_id, txid, token, user_id, message_id, value, sender, ts_ms,"
-        " first_seen, next_check) VALUES(?,?,?,?,?,?,?,?,?,?)",
-        (wallet_id, d.txid, d.token, user_id, message_id, d.value, d.sender, d.ts_ms, now, now + 20),
-    )
-    await db.commit()
-
-
-async def due_pending(db: aiosqlite.Connection, now: int, limit: int = 50) -> list[aiosqlite.Row]:
-    async with db.execute("SELECT * FROM pending WHERE next_check<=? ORDER BY next_check LIMIT ?", (now, limit)) as cur:
-        return list(await cur.fetchall())
-
-
-async def delay_pending(db: aiosqlite.Connection, row, next_check: int) -> None:
-    await db.execute("UPDATE pending SET next_check=? WHERE wallet_id=? AND txid=? AND token=?",
-                     (next_check, row["wallet_id"], row["txid"], row["token"]))
-    await db.commit()
-
-
-async def delete_pending(db: aiosqlite.Connection, row) -> None:
-    await db.execute("DELETE FROM pending WHERE wallet_id=? AND txid=? AND token=?",
-                     (row["wallet_id"], row["txid"], row["token"]))
     await db.commit()

@@ -1,7 +1,7 @@
 """블록 스캔: 새 블록을 3초마다 받아 등록된 지갑으로 온 입금을 바로 알린다.
 
 지갑마다 조회하는 대신 블록을 받아 우리가 직접 걸러내므로, TronGrid 호출 수가 지갑 수와 상관없이 일정하다.
-알림은 블록에 들어간 직후(확정 전)에 보내고, 확정되면 Watcher.confirm이 같은 메시지를 고친다.
+알림은 입금이 블록에 들어간 직후에 한 번만 보낸다. (실패한 거래는 걸러내고, 확정 여부는 따로 알리지 않는다)
 """
 from __future__ import annotations
 
@@ -44,7 +44,7 @@ class Scanner:
             return 0.0
         watch = await store.watched_hex(self.db)
         if watch:
-            await self.watcher.notify_deposits(scan_block(block, watch), pending=True, now=now)
+            await self.watcher.notify_deposits(scan_block(block, watch))
         await store.set_scan(self.db, block.number, block.ts_ms)
         # 다음 블록은 이 블록 시각 + 3초쯤에 생긴다. 이미 지났다면(밀렸다면) 기다리지 않고 바로 받는다
         return min(max(0.0, block.ts_ms / 1000 + BLOCK_SECONDS + 0.3 - now), BLOCK_SECONDS + 0.5)

@@ -56,8 +56,6 @@ class FakeTron:
         self.calls, self.fail, self.limit = [], False, False
         self.blocks: dict[int, dict] = {}
         self.head = 1000
-        self.solid: set[str] = set()      # 확정된 거래
-        self.known: set[str] = set()      # 노드가 알고 있는 거래(블록이 뒤집히면 여기서 빠진다)
         self.new_block([], ts=now_ms(0))
 
     async def start(self):
@@ -67,8 +65,7 @@ class FakeTron:
         app.router.add_get("/v1/accounts/{a}", self.h_acct)
         app.router.add_post("/wallet/getnowblock", self.h_now)
         app.router.add_post("/wallet/getblockbynum", self.h_block)
-        app.router.add_post("/walletsolidity/gettransactioninfobyid", self.h_info)
-        app.router.add_post("/wallet/gettransactionbyid", self.h_tx)
+
         self.runner = web.AppRunner(app)
         await self.runner.setup()
         await web.TCPSite(self.runner, "127.0.0.1", 0).start()
@@ -106,26 +103,12 @@ class FakeTron:
             return r
         return web.json_response(self.blocks.get((await req.json())["num"], {}))
 
-    async def h_info(self, req):
-        if (r := self._gate(req)):
-            return r
-        txid = (await req.json())["value"]
-        return web.json_response({"id": txid, "blockNumber": 1} if txid in self.solid else {})
-
-    async def h_tx(self, req):
-        if (r := self._gate(req)):
-            return r
-        txid = (await req.json())["value"]
-        return web.json_response({"txID": txid} if txid in self.known else {})
-
     def new_block(self, txs, ts=None, number=None) -> int:
         """블록을 하나 만든다. 번호를 안 주면 최신 다음 번호."""
         n = number if number is not None else (self.head + 1 if self.blocks else self.head)
         self.blocks[n] = {"block_header": {"raw_data": {"number": n, "timestamp": ts or now_ms(0)}},
                           "transactions": txs}
         self.head = max(self.head, n)
-        for t in txs:
-            self.known.add(t["txID"])
         return n
 
     @staticmethod
@@ -389,23 +372,17 @@ async def test_scanner_starts_from_latest_block_and_ignores_history(env):
     assert deposits_in(env, U1) == []
 
 
-async def test_usdt_deposit_pending_then_confirmed(env):
+async def test_usdt_deposit_alert_is_a_single_plain_message(env):
     await register(env)
     await init_scan(env)
     env.tron.new_block([FakeTron.tx_usdt(W1H, 25_500_000, "tx-usdt-1")])
     await scan_all(env)
     msg = last(env, U1)
-    assert "입금 알림" in msg and "내 지갑" in msg and "+25.50 USDT" in msg and "확정 대기 중" in msg
-    assert "≈ 36,414원" in msg and SENDER in msg and "tronscan.org/#/transaction/tx-usdt-1" in msg and "소액" not in msg
-    assert len(await store.due_pending(env.db, 2**40)) == 1
-
-    await env.watcher.confirm(time.time() + 30)                    # 아직 확정 전이면 그대로
-    assert "확정 대기 중" in env.tg.of("sendMessage")[-1]["text"] and not env.tg.of("editMessageText")
-    env.tron.solid.add("tx-usdt-1")
-    await env.watcher.confirm(time.time() + 60)
-    edited = env.tg.of("editMessageText")[-1]
-    assert "✅ <b>확정</b>" in edited["text"] and "확정 대기" not in edited["text"] and "+25.50 USDT" in edited["text"]
-    assert await store.due_pending(env.db, 2**40) == []
+    assert "입금 알림" in msg and "내 지갑" in msg and "+25.50 USDT" in msg and "소액" not in msg
+    assert "≈ 36,414원" in msg and SENDER in msg and "tronscan.org/#/transaction/tx-usdt-1" in msg
+    assert "확정" not in msg and "대기" not in msg                       # 확정 여부는 따로 알리지 않는다
+    await scan_all(env)
+    assert len(deposits_in(env, U1)) == 1 and not env.tg.of("editMessageText")
 
 
 async def test_trx_deposit_alert(env):
@@ -532,7 +509,6 @@ async def test_blocked_user_is_deactivated_and_dropped_from_watch(env):
     async with env.db.execute("SELECT is_active FROM users WHERE user_id=?", (U1,)) as cur:
         assert (await cur.fetchone())["is_active"] == 0
     assert await store.watched_hex(env.db) == {}                       # 막은 사람의 지갑은 더 안 본다
-    assert await store.due_pending(env.db, 2**40) == []
 
 
 # ───────────── 블록 스캔 동작 ─────────────
@@ -570,7 +546,7 @@ async def test_long_lag_falls_back_to_history_and_jumps_to_head(env):
     env.tron.pay_usdt(W1, 8_000_000, "missed-1")                        # 그동안 들어온 입금(내역 조회로 보임)
     await env.scanner.step()
     assert (await store.get_scan(env.db))["last_block"] == env.tron.head and env.tron.head > first + 1
-    assert "+8.00 USDT" in last(env, U1) and "확정 대기" not in last(env, U1) and "✅ <b>확정</b>" in last(env, U1)
+    assert "+8.00 USDT" in last(env, U1) and "확정" not in last(env, U1)
 
 
 async def test_scan_errors_keep_position_and_recover(env):
@@ -603,56 +579,6 @@ async def test_scan_loop_reports_rate_limit_to_admin_once(env):
     await asyncio.gather(task, return_exceptions=True)
     assert sum("호출 한도" in t for t in env.tg.texts_to(ADMIN)) == 1
     assert env.watcher.paused(time.time())
-
-
-# ───────────── 확정 확인 ─────────────
-
-async def pending_deposit(env, txid="p1", micro=6_000_000):
-    await register(env)
-    await init_scan(env)
-    env.tron.new_block([FakeTron.tx_usdt(W1H, micro, txid)])
-    await scan_all(env)
-
-
-async def test_dropped_deposit_is_marked_cancelled(env):
-    await pending_deposit(env)
-    env.tron.known.discard("p1")                                       # 블록이 뒤집혀 거래가 사라졌다
-    await env.watcher.confirm(time.time() + 120)                       # 아직 10분 전이라 기다린다
-    assert not env.tg.of("editMessageText")
-    await env.watcher.confirm(time.time() + 700)
-    assert "❌ <b>취소됨</b>" in env.tg.of("editMessageText")[-1]["text"] and await store.due_pending(env.db, 2**40) == []
-
-
-async def test_unconfirmed_for_too_long_gives_up_with_notice(env):
-    await pending_deposit(env)                                         # 거래는 있는데 확정이 안 된다
-    await env.watcher.confirm(time.time() + 700)
-    assert not env.tg.of("editMessageText")                            # 10분이 지났어도 거래가 있으면 계속 기다린다
-    await env.watcher.confirm(time.time() + 2000)
-    assert "확정 여부를 확인하지 못했습니다" in env.tg.of("editMessageText")[-1]["text"]
-    assert await store.due_pending(env.db, 2**40) == []
-
-
-async def test_confirm_survives_chain_errors_and_rate_limit(env):
-    await pending_deposit(env)
-    env.tron.solid.add("p1")
-    env.tron.fail = True
-    await env.watcher.confirm(time.time() + 60)
-    assert len(await store.due_pending(env.db, 2**40)) == 1 and not env.tg.of("editMessageText")
-    env.tron.fail, env.tron.limit = False, True
-    await env.watcher.confirm(time.time() + 90)
-    assert env.watcher.paused(time.time() + 90) and not env.tg.of("editMessageText")
-    env.tron.limit = False
-    env.watcher._pause_until = 0
-    await env.watcher.confirm(time.time() + 200)
-    assert "✅ <b>확정</b>" in env.tg.of("editMessageText")[-1]["text"]
-
-
-async def test_confirm_checks_are_spaced_out(env):
-    await pending_deposit(env)
-    env.tron.calls.clear()
-    await env.watcher.confirm(time.time() + 25)
-    await env.watcher.confirm(time.time() + 26)                        # 방금 확인했으니 20초 안에는 다시 묻지 않는다
-    assert len(env.tron.calls) == 1
 
 
 # ───────────── 잔액 대조 · 놓친 입금 보충 ─────────────

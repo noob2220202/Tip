@@ -110,14 +110,6 @@ class TronReader:
     async def block(self, number: int) -> Block | None:
         return self._block(await self._post("/wallet/getblockbynum", {"num": number}))
 
-    async def solidified(self, txid: str) -> bool:
-        """블록이 확정(solidity)됐는지. 확정된 거래만 이 조회에서 내역이 나온다."""
-        return bool((await self._post("/walletsolidity/gettransactioninfobyid", {"value": txid})).get("id"))
-
-    async def tx_exists(self, txid: str) -> bool:
-        """아직 확정 전이라도 노드에 거래가 있는지. 블록이 뒤집혀 사라졌다면 False."""
-        return bool((await self._post("/wallet/gettransactionbyid", {"value": txid})).get("txID"))
-
     async def _pages(self, path: str, params: dict) -> list[dict]:
         rows: list[dict] = []
         params = {**params, "limit": PAGE_LIMIT, "order_by": "block_timestamp,asc", "only_to": "true",

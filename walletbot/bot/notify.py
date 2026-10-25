@@ -40,16 +40,6 @@ class Notifier:
     async def send(self, user_id: int, text: str, markup: InlineKeyboardMarkup | None = None) -> bool:
         return await self.send_id(user_id, text, markup) is not None
 
-    async def edit(self, user_id: int, message_id: int, text: str) -> bool:
-        """이미 보낸 알림을 고친다(확정 표시 등). 지워졌거나 못 고치면 False."""
-        try:
-            await self.bot.edit_message_text(text, chat_id=user_id, message_id=message_id,
-                                             link_preview_options=LinkPreviewOptions(is_disabled=True))
-            return True
-        except TelegramAPIError as e:
-            log.warning("알림 수정 실패 user=%s: %s", user_id, e)
-            return False
-
     async def admins(self, text: str) -> None:
         for a in self.admin_ids:
             await self.send(a, text)

@@ -36,7 +36,7 @@ TEXTS: dict[str, list[str]] = {
         "3️⃣ <b>💰 잔액</b>, <b>📈 시세</b>는 언제든 조회하실 수 있습니다.\n"
         "4️⃣ <b>🔔 알림 설정</b>에서 최소 알림 금액, 김프 조건, 정기 시세를 정하십시오.</blockquote>\n\n"
         "⌨️ <b>/지갑</b> <b>/잔액</b> <b>/시세</b> <b>/알림</b> · 입력 취소는 <b>/cancel</b>\n\n"
-        "ℹ️ 입금은 블록체인에서 <b>확정된 뒤</b> 알려 드려서 실제 입금보다 1~2분 늦을 수 있습니다.",
+        "ℹ️ 입금이 블록에 들어가면 보통 <b>몇 초 안에</b> 알려 드립니다.",
     ],
 }
 
@@ -159,8 +159,7 @@ def added(w) -> str:
 
 # ---- 입금 알림 ----
 
-def deposit_text(w, d: Deposit, quote: Quote | None, status: str = "confirmed") -> str:
-    """status: confirmed(확정) · pending(블록에 들어감, 확정 대기) · dropped(블록이 뒤집혀 취소) · unknown(확정 확인 지연)"""
+def deposit_text(w, d: Deposit, quote: Quote | None) -> str:
     amount = money.fmt(d.value)
     approx = ""
     if quote:
@@ -170,18 +169,12 @@ def deposit_text(w, d: Deposit, quote: Quote | None, status: str = "confirmed") 
     if d.value < SMALL:
         warn = ("\n\n⚠️ <b>소액 입금</b>입니다. 내 주소와 비슷한 주소로 위장해 송금을 유도하는 스팸일 수 있으니, "
                 "<b>보낸 주소로 송금하지 마십시오.</b>")
-    title, badge = {
-        "confirmed": ("📥 <b>입금 알림</b>", "\n✅ <b>확정</b>"),
-        "pending": ("📥 <b>입금 알림</b>", "\n⏳ <b>확정 대기 중</b> — 블록에 들어갔고 약 1분 뒤 확정됩니다."),
-        "dropped": ("📥 <b>입금 알림 (취소)</b>", "\n❌ <b>취소됨</b> — 블록이 바뀌어 이 입금은 사라졌습니다. 입금으로 보지 마십시오."),
-        "unknown": ("📥 <b>입금 알림</b>", "\n⚠️ 확정 여부를 확인하지 못했습니다. TRONSCAN에서 확인해 주십시오."),
-    }[status]
     return (
-        f"{title} — {name_of(w)}\n\n"
+        f"📥 <b>입금 알림</b> — {name_of(w)}\n\n"
         f"<blockquote>💰 <b>+{amount} {d.token}</b>{approx}\n"
         f"👤 보낸 주소 <code>{esc(d.sender)}</code>\n"
         f"🕒 {kst(d.ts_ms / 1000)} (KST)\n"
-        f"🔗 <a href=\"{SCAN_TX.format(d.txid)}\">거래 내역 보기</a></blockquote>{badge}{warn}"
+        f"🔗 <a href=\"{SCAN_TX.format(d.txid)}\">거래 내역 보기</a></blockquote>{warn}"
     )
 
 

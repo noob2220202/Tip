@@ -1,6 +1,5 @@
 """백그라운드 감시. 입금은 Scanner가 블록에서 바로 잡고, 여기서는 그 뒤처리와 보충을 맡는다.
 
-- 확정 확인: 블록에 들어간 직후 알린 입금이 확정되면 같은 메시지를 '확정'으로 고친다
 - 잔액 대조: 주기적으로 잔액을 확인해서, 블록 스캔으로 못 잡은 입금(컨트랙트 경유 등)을 내역 조회로 보충한다
 - 놓친 구간 보충: 봇이 오래 꺼져 있었거나 스캔이 많이 밀렸을 때 지갑별 내역 조회로 메운다
 - 김프 조건 알림, 정기 시세 알림
@@ -27,9 +26,6 @@ REARM_GAP = 0.2                 # 김프가 조건에서 이만큼(%p) 되돌아
 DAILY_WINDOW = timedelta(minutes=10)   # 정기 시세는 정한 시각에서 이 시간 안이면 늦게라도 보낸다(재시작 직후 등)
 ERROR_ALERT_EVERY = 1800        # 같은 종류의 오류를 관리자에게 알리는 최소 간격(초)
 RECONCILE_BATCH = 20            # 한 번에 잔액을 대조하는 주소 수 (호출이 몰리지 않게 나눈다)
-CONFIRM_RETRY = 20              # 확정 확인 간격(초)
-CONFIRM_DROP_CHECK = 600        # 이 시간(초)이 지나도 확정이 안 되면 거래가 아직 있는지 본다
-CONFIRM_GIVE_UP = 1800          # 이 시간(초)이 지나면 확인을 그만둔다
 
 
 class Watcher:
@@ -42,7 +38,6 @@ class Watcher:
 
     async def tick(self, now: float | None = None) -> None:
         now = now or time.time()
-        await self.confirm(now)
         await self.reconcile(now)
         await self.kimp()
         await self.daily(now)
@@ -62,11 +57,10 @@ class Watcher:
 
     # ---- 입금 알림 ----
 
-    async def notify_deposits(self, found: list[Deposit], pending: bool, now: float | None = None) -> None:
-        """받은 지갑(Deposit.to)의 주인들에게 알린다. pending이면 확정 대기로 보내고 확정 확인 목록에 올린다."""
+    async def notify_deposits(self, found: list[Deposit]) -> None:
+        """받은 지갑(Deposit.to)의 주인들에게 알린다."""
         if not found:
             return
-        now = now or time.time()
         try:
             quote = await self.prices.get()
         except PriceError:
@@ -81,51 +75,12 @@ class Watcher:
                 if d.value < (s["min_usdt"] if d.token == "USDT" else s["min_trx"]):
                     await store.count_filtered(self.db, w["user_id"])
                     continue
-                text = T.deposit_text(w, d, quote, "pending" if pending else "confirmed")
-                mid = await self.notifier.send_id(w["user_id"], text)
-                if mid is None:
+                if not await self.notifier.send(w["user_id"], T.deposit_text(w, d, quote)):
                     # 막힌 사용자가 아니라 일시 오류라면 다음에 다시 시도하도록 기록을 지운다
                     async with self.db.execute("SELECT is_active FROM users WHERE user_id=?", (w["user_id"],)) as cur:
                         u = await cur.fetchone()
                     if u and u["is_active"]:
                         await store.unclaim_tx(self.db, w["id"], d.txid, d.token)
-                elif pending:
-                    await store.add_pending(self.db, w["id"], w["user_id"], mid, d, int(now))
-
-    # ---- 확정 확인 ----
-
-    async def confirm(self, now: float) -> None:
-        if self.paused(now):
-            return
-        for row in await store.due_pending(self.db, int(now)):
-            age = now - row["first_seen"]
-            d = Deposit(row["txid"], row["token"], row["sender"], row["value"], row["ts_ms"])
-            try:
-                if await self.chain.solidified(row["txid"]):
-                    status = "confirmed"
-                elif age >= CONFIRM_DROP_CHECK and not await self.chain.tx_exists(row["txid"]):
-                    status = "dropped"
-                elif age >= CONFIRM_GIVE_UP:
-                    status = "unknown"
-                else:
-                    await store.delay_pending(self.db, row, int(now) + CONFIRM_RETRY)
-                    continue
-            except RateLimited:
-                await self.rate_limited(now)
-                return
-            except TronError as e:
-                log.warning("확정 확인 실패 %s: %s", row["txid"], e)
-                await store.delay_pending(self.db, row, int(now) + CONFIRM_RETRY)
-                continue
-            async with self.db.execute("SELECT * FROM wallets WHERE id=?", (row["wallet_id"],)) as cur:
-                w = await cur.fetchone()
-            if w:
-                try:
-                    quote = await self.prices.get()
-                except PriceError:
-                    quote = None
-                await self.notifier.edit(row["user_id"], row["message_id"], T.deposit_text(w, d, quote, status))
-            await store.delete_pending(self.db, row)
 
     # ---- 잔액 대조 · 놓친 입금 보충 ----
 
@@ -138,7 +93,7 @@ class Watcher:
         found = await self.chain.deposits(address, max(0, row["cursor_ms"] - OVERLAP_MS))
         for d in found:
             d = Deposit(d.txid, d.token, d.sender, d.value, d.ts_ms, address)
-            await self.notify_deposits([d], pending=False, now=now)
+            await self.notify_deposits([d])
         await store.set_cursor(self.db, address, started_ms)
 
     async def backfill_all(self, now: float) -> None:
