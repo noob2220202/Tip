@@ -1,6 +1,7 @@
 """aiogram을 붙여 테스트하는 가짜 텔레그램 Bot API 서버 (aiohttp)."""
 from __future__ import annotations
 
+import asyncio
 import json
 from typing import Any
 
@@ -16,6 +17,10 @@ class FakeTelegram:
         self.forbidden: set[int] = set()                # 이 사용자에게 보내면 403
         self.retry_once: set[int] = set()               # 이 사용자에게 처음 보낼 때 429
         self.sets: dict[str, dict] = {}
+        self.bots: dict[int, str] = {}                  # 토큰 앞 숫자(봇 id) -> username. 여기 없으면 기본 봇으로 응답
+        self.bad_tokens: set[int] = set()               # 이 봇 id의 요청은 401
+        self.queued: dict[int, list[dict]] = {}         # 봇 id -> getUpdates로 내보낼 update
+        self.read_all = True                            # getMe의 can_read_all_group_messages
         self._msg_id = 100
         self.runner: web.AppRunner | None = None
         self.base = ""
@@ -82,8 +87,18 @@ class FakeTelegram:
         p = await self._params(request)
         self.calls.append((method, p))
 
+        token = request.match_info["token"]
+        bot_id = int(token.split(":")[0]) if token.split(":")[0].isdigit() else 0
+        if bot_id in self.bad_tokens:
+            return self._err(401, "Unauthorized")
         if method == "getMe":
+            if bot_id in self.bots:
+                return self._ok({"id": bot_id, "is_bot": True, "first_name": "tip", "username": self.bots[bot_id],
+                                 "can_read_all_group_messages": self.read_all})
             return self._ok({"id": 1, "is_bot": True, "first_name": "tip", "username": BOT_USERNAME})
+        if method == "getUpdates":
+            await asyncio.sleep(0.05)
+            return self._ok(self.queued.pop(bot_id, []))
         if method in ("deleteWebhook", "answerCallbackQuery", "deleteMessage"):
             return self._ok(True)
         if method == "getChatMember":

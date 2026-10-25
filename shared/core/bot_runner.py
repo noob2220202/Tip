@@ -157,6 +157,7 @@ async def _main(
     data: Mapping[str, Any] | None,
     on_startup: Callable[[Bot, Any, BotConfig], Awaitable[Mapping[str, Any] | None]] | None,
     gate: bool,
+    on_shutdown: Callable[[Mapping[str, Any]], Awaitable[None]] | None = None,
 ) -> None:
     cfg = load_bot_config(bot_dir)
     db = await open_db(cfg.db_path, schema)
@@ -179,6 +180,8 @@ async def _main(
         if check_task:
             check_task.cancel()
         await drain(dp["tracker"])
+        if on_shutdown:
+            await on_shutdown(extra)
         await sender.stop()
         await bot.session.close()
         await db.close()
@@ -192,6 +195,7 @@ def run_bot(
     data: Mapping[str, Any] | None = None,
     on_startup: Callable[[Bot, Any, BotConfig], Awaitable[Mapping[str, Any] | None]] | None = None,
     gate: bool = True,
+    on_shutdown: Callable[[Mapping[str, Any]], Awaitable[None]] | None = None,
 ) -> None:
     """봇 폴더의 main.py에서 이 한 줄로 공통 기능을 붙인다.
 
@@ -200,9 +204,10 @@ def run_bot(
     data: 핸들러에 키워드 인자로 주입할 값
     on_startup: (bot, db, cfg)를 받아 추가 주입값 dict를 돌려주는 async 훅
     gate: False면 채널 가입 게이트를 붙이지 않는다 (검수 봇 자신용)
+    on_shutdown: 종료할 때 DB를 닫기 전에 불린다. on_startup이 돌려준 주입값 dict를 받는다 (백그라운드 작업 정리용)
     """
     setup_logging()
     try:
-        asyncio.run(_main(Path(bot_dir), routers, texts, schema, data, on_startup, gate))
+        asyncio.run(_main(Path(bot_dir), routers, texts, schema, data, on_startup, gate, on_shutdown))
     except (KeyboardInterrupt, SystemExit):
         pass
