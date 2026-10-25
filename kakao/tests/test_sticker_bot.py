@@ -454,3 +454,47 @@ def test_ffmpeg_failure_message_has_exit_code(monkeypatch):
     frames, durations = media.load_frames(anim_webp(3))
     with pytest.raises(media.ConvertError, match="종료 코드 3"):
         media._encode(media.resample(frames, durations, 30), 30, 30)
+
+
+def _fake_encoder(monkeypatch, size_of):
+    """실제 인코딩 대신 (fps, crf)로 용량을 정해 주는 가짜. 호출 기록을 돌려준다."""
+    from bot import media
+
+    calls = []
+
+    def fake(frames, fps, crf):
+        calls.append((fps, crf))
+        return b"x" * size_of(fps, crf)
+
+    monkeypatch.setattr(media, "_encode", fake)
+    return calls
+
+
+def test_video_search_picks_best_quality_with_few_encodes(monkeypatch):
+    from bot import media
+
+    # crf가 6 올라갈 때마다 용량이 절반. crf 48에서 처음으로 256KB 이하가 된다 (42는 400KB)
+    calls = _fake_encoder(monkeypatch, lambda fps, crf: int(1_600_000 / 2 ** ((crf - 30) / 6)))
+    out = media.to_video_sticker(anim_webp(3))
+    assert len(out) <= media.VIDEO_LIMIT
+    assert (30, 42) in calls and len(out) == 200_000                      # 들어가는 가장 좋은 화질(crf 48)
+    assert len(calls) <= 4 and {fps for fps, _ in calls} == {30}          # 24단계를 다 돌지 않는다
+
+
+def test_video_search_skips_fps_that_cannot_fit_and_fails_with_size(monkeypatch):
+    from bot import media
+
+    # fps에 비례해 커지고 가장 낮은 화질로도 한도의 3배: 15fps여도 못 들어간다
+    calls = _fake_encoder(monkeypatch, lambda fps, crf: 3 * media.VIDEO_LIMIT * fps // 30)
+    with pytest.raises(media.ConvertError, match="256KB 안에 못 담았어요"):
+        media.to_video_sticker(anim_webp(3))
+    assert calls == [(30, 60), (15, 60)]                                  # 소용없는 24·20fps는 인코딩하지 않는다
+
+
+def test_video_search_lowers_fps_when_needed(monkeypatch):
+    from bot import media
+
+    calls = _fake_encoder(monkeypatch, lambda fps, crf: int(1.2 * media.VIDEO_LIMIT * fps / 30 / 2 ** ((crf - 30) / 6)
+                                                            if crf > 40 else 10**7))
+    out = media.to_video_sticker(anim_webp(3))
+    assert len(out) <= media.VIDEO_LIMIT and calls[0] == (30, 60)

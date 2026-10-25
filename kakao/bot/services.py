@@ -8,7 +8,8 @@ from bot.kakao import KakaoClient, Session
 from core.config import BotConfig
 
 DEFAULT_EMOJI = "😊"
-CONVERT_CONCURRENCY = 2
+# 동시에 변환하는 이모티콘 수. 변환 하나가 메모리를 수백MB 쓰므로 램이 작으면 1로 둔다 (.env의 CONVERT_CONCURRENCY)
+DEFAULT_CONCURRENCY = 1
 
 
 async def migrate(db) -> None:
@@ -29,7 +30,7 @@ async def on_startup(bot, db, cfg: BotConfig) -> dict:
     return {
         "kakao": KakaoClient(session),
         "kakao_session": session,
-        "convert_sem": asyncio.Semaphore(CONVERT_CONCURRENCY),
+        "convert_sem": asyncio.Semaphore(max(1, int(cfg.env.get("CONVERT_CONCURRENCY") or DEFAULT_CONCURRENCY))),
         "inflight": set(),
         "emoji": cfg.env.get("STICKER_EMOJI") or DEFAULT_EMOJI,
         "alert_state": {"last": 0.0},
