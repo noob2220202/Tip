@@ -1,6 +1,8 @@
 import json
 from pathlib import Path
 
+import pytest
+
 from aiogram import Router
 from aiogram.filters import Command
 from aiogram.types import Message, Update
@@ -232,3 +234,26 @@ async def test_drain_waits_for_inflight_update_and_gives_up_after_timeout(make_c
     assert await drain(dp2["tracker"], timeout=0.2) == 1             # 시간이 지나면 포기한다
     job2.cancel()
     assert await drain(dp2["tracker"], timeout=1) == 0
+
+
+def test_tron_address_validation_and_hex_roundtrip():
+    from core import tron
+
+    usdt = "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t"            # 실제 USDT 컨트랙트 주소 (체크섬이 맞는 주소)
+    assert tron.is_tron_address(usdt)
+    assert not tron.is_tron_address(usdt[:-1] + ("a" if usdt[-1] != "a" else "b"))   # 체크섬 불일치
+    assert not tron.is_tron_address("T" + "1" * 33) and not tron.is_tron_address("") and not tron.is_tron_address(usdt + "1")
+    assert tron.hex_to_address("41a614f803b6fd780986a42c78ec9c7f77e6ded13c") == "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t"
+    assert tron.hex_to_address("a614f803b6fd780986a42c78ec9c7f77e6ded13c") == usdt     # 41 접두어가 없어도 된다
+    assert tron.hex_to_address("zz") is None and tron.hex_to_address("42" + "0" * 40) is None
+
+
+@pytest.mark.parametrize("text,expected", [
+    ("21:00", (21, 0)), ("9:30", (9, 30)), ("21시", (21, 0)), ("오후 9시", (21, 0)), ("오후 9시 30분", (21, 30)),
+    ("오전 12시", (0, 0)), ("오후 12시", (12, 0)), ("21", (21, 0)),
+    ("24:00", None), ("12:60", None), ("오후 13시", None), ("저녁", None), ("", None),
+])
+def test_parse_time(text, expected):
+    from core.clock import parse_time
+
+    assert parse_time(text) == expected
