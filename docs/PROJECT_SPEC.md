@@ -13,6 +13,7 @@
 - 두 번째 봇은 `boost`(그룹·채널 부스트 판매)다. USDT(TRC20)로 결제하고, TronGrid로 입금을 확인하면 SMM 패널(표준 API v2)에 자동으로 주문한다. 입금 인정 조건은 보내는 주소·금액 정확 일치·주문 시간 안의 블록·미사용 txid다. 자세한 내용은 `boost/README.md`.
 - 세 번째 봇은 `rankbot`(채팅 순위 봇을 사용자가 직접 만드는 서비스)이다. 관리 봇 하나가 토큰을 받으면 같은 프로세스에서 고객 봇이 폴링을 시작한다. 토큰은 Fernet으로 암호화해 저장하고(`TOKEN_KEY`), 봇 단위로 최소 글자·발표 요일/시간·온오프·이름·경품·응모 자격을 바꾼다. 자세한 내용은 `rankbot/README.md`.
 - 네 번째 봇은 `walletbot`(TRON 지갑 입금 알림·잔액·빗썸 시세/김프)이다. 사용자당 지갑 3개. 지갑마다 조회하지 않고 새 블록을 3초마다 받아 직접 걸러서(블록 스캔) 입금을 블록에 들어간 직후 한 번만 알린다(확정 표시 없음, 실패한 거래는 제외). TronGrid 호출 수가 지갑 수와 무관하다. 블록에 드러나지 않는 입금은 주기적 잔액 대조로 보충한다. 김프는 빗썸 USDT ÷ 무료 환율 API(USD/KRW)로 계산한다. 자세한 내용은 `walletbot/README.md`.
+- 다섯 번째 봇은 `giveaway`(기프트콘 이벤트)다. 관리자만 이벤트를 만들고, 봇 사용자 중 실행 시점에 필수 채널을 구독 중인 사람을 대상으로 추첨(N명에게 각자 다른 코드) 또는 전원 동일 발송을 한다. 코드는 한 번만 쓰므로 배정 기록을 먼저 남기고 보내며, 보내졌는지 불확실하면 코드를 되돌리지 않는다. 자세한 내용은 `giveaway/README.md`.
 - TRON 주소 검증(`core/tron.py`)과 시각 입력 해석(`core/clock.py`)은 여러 봇이 같이 쓰도록 `shared/core/`로 옮겼다.
 - `run_bot()`에 `on_shutdown` 훅을 추가했다(종료 때 DB를 닫기 전에 호출). 백그라운드 작업을 가진 봇이 정리하는 데 쓴다.
 - 봇마다 core를 복사하던 방식을 없애고 `shared/` 통합 폴더로 합쳤다. `bots/` 구조와 `tools/new_bot.py`는 없다. 새 봇은 `kakao/`를 참고해 `Tip/<봇>/` 폴더로 만든다.
@@ -75,6 +76,10 @@ Tip/                            # 저장소 (서버: /root/Tip)
 │   ├── main.py, bot/           # chain.py(TronGrid·블록 해석), scanner.py(블록 스캔), watcher.py(잔액 대조·김프·정기 알림), prices.py(빗썸·환율), store.py, notify.py, handlers/
 │   ├── .env.example            # BOT_TOKEN, ADMIN_IDS, TRONGRID_API_KEY, MAX_WALLETS_TOTAL, RECONCILE_MINUTES
 │   └── ecosystem.config.js     # pm2 앱 `walletbot`
+├── giveaway/                   # 봇: 기프트콘 이벤트 (서버: /root/giveaway 링크)
+│   ├── main.py, bot/           # engine.py(실행·코드 배정), eligibility.py(구독 확인), store.py, handlers/(admin, start)
+│   ├── .env.example            # BOT_TOKEN, ADMIN_IDS, VERIFY_SECRET, SEND_PER_SEC
+│   └── ecosystem.config.js     # pm2 앱 `giveaway`
 ├── verify/                     # 봇: 채널 가입 검수 (채널 관리자, 서버: /root/verify 링크)
 │   ├── main.py                 # 검수 서비스(127.0.0.1:VERIFY_PORT)를 띄움, 자기 자신에겐 게이트 없음
 │   ├── bot/                    # /start, /help, 관리자용 /channels, /check

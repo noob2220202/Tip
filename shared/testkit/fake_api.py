@@ -21,6 +21,9 @@ class FakeTelegram:
         self.bad_tokens: set[int] = set()               # 이 봇 id의 요청은 401
         self.queued: dict[int, list[dict]] = {}         # 봇 id -> getUpdates로 내보낼 update
         self.read_all = True                            # getMe의 can_read_all_group_messages
+        self.server_error: set[int] = set()             # 이 사용자에게 보내면 502 (보내졌는지 알 수 없는 오류)
+        self.bad_chats: set[str] = set()                # 이 채널을 조회하면 getChatMember가 400 (채널을 못 찾음)
+        self.sent: list[tuple[str, dict[str, Any]]] = []   # 실제로 성공한 전송만 (calls에는 실패한 시도도 들어간다)
         self._msg_id = 100
         self.runner: web.AppRunner | None = None
         self.base = ""
@@ -102,6 +105,8 @@ class FakeTelegram:
         if method in ("deleteWebhook", "answerCallbackQuery", "deleteMessage"):
             return self._ok(True)
         if method == "getChatMember":
+            if str(p["chat_id"]) in self.bad_chats:
+                return self._err(400, "Bad Request: chat not found")
             status = self.members.get((str(p["chat_id"]), int(p["user_id"])), "left")
             member = {"status": status, "user": {"id": int(p["user_id"]), "is_bot": False, "first_name": "u"}}
             if status == "restricted":
@@ -119,6 +124,11 @@ class FakeTelegram:
                 return self._err(429, "Too Many Requests: retry after 1", retry_after=1)
             if uid in self.forbidden:
                 return self._err(403, "Forbidden: bot was blocked by the user")
+            if uid in self.server_error:
+                return self._err(502, "Bad Gateway")
+            if p.get("photo") == "BAD_FILE":
+                return self._err(400, "Bad Request: wrong file identifier/HTTP URL specified")
+            self.sent.append((method, p))
             return self._ok(self._message(uid, p.get("text", "")))
         if method == "editMessageText":
             return self._ok(self._message(p["chat_id"], p.get("text", "")))
