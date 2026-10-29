@@ -17,7 +17,7 @@ Tip/                        ← 저장소 (서버에서는 /root/Tip)
 ├── boost/                  ← 봇: 그룹·채널 부스트 판매 (USDT TRC20 결제, SMM 패널 연동)  (boost/README.md)
 ├── rankbot/                ← 봇: 채팅 순위 봇을 사용자가 직접 만드는 서비스 (토큰 등록 → 주간 순위 발표)  (rankbot/README.md)
 ├── giveaway/               ← 봇: 구독자 대상 기프트콘 추첨·전원 발송 (관리자 전용)  (giveaway/README.md)
-├── walletbot/              ← 봇: TRON 지갑 입금 알림 · 잔액 · 빗썸 시세/김프  (walletbot/README.md)
+├── walletbot/              ← 봇: TRON 지갑 입금 알림 · 잔액 · 빗썸 시세/김프 · 에너지 임대 · 비즈니스 /조회 /시세 /환율  (walletbot/README.md)
 ├── verify/                 ← 봇: 채널 가입 검수 전용 (채널 관리자는 이 봇 하나)
 ├── scripts/                ← 서버 운영 스크립트 (전체 봇 대상)
 └── docs/
@@ -48,7 +48,7 @@ cd /root/kakao  && cp .env.example .env && nano .env     # BOT_TOKEN, ADMIN_IDS,
 # 카카오 로그인(1회)은 kakao/README.md 참고
 cd /root/boost  && cp .env.example .env && nano .env     # 지갑·TronGrid·SMM 패널 설정은 boost/README.md 참고
 cd /root/rankbot && cp .env.example .env && nano .env    # TOKEN_KEY 만드는 법은 rankbot/README.md 참고 (한 번 정하면 바꾸지 말 것)
-cd /root/walletbot && cp .env.example .env && nano .env  # TronGrid 키와 지갑 상한은 walletbot/README.md 참고
+cd /root/walletbot && cp .env.example .env && nano .env  # TronGrid 키·지갑 상한·에너지 공급처 키는 walletbot/README.md 참고
 cd /root/giveaway && cp .env.example .env && nano .env   # 기프트콘 이벤트 봇: BOT_TOKEN, ADMIN_IDS, VERIFY_SECRET
 
 cd /root/Tip

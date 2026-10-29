@@ -1,4 +1,4 @@
-"""TronGrid 조회: 입금 내역(USDT TRC20 + TRX)과 잔액."""
+"""TronGrid 조회: 입금 내역(USDT TRC20 + TRX), 잔액, 계정 자원(에너지·대역폭), USDT 전송 모의 실행."""
 from __future__ import annotations
 
 import asyncio
@@ -13,6 +13,7 @@ USDT_HEX = address_to_hex(USDT_CONTRACT)
 PAGE_LIMIT = 200
 MAX_PAGES = 5
 BALANCE_TTL = 15   # 같은 주소를 연달아 조회할 때 TronGrid를 아끼려고 잠깐 기억해 둔다(초)
+PARAMS_TTL = 3600  # 체인 수수료 설정(에너지 1당 태우는 TRX)은 자주 바뀌지 않는다
 
 
 class TronError(Exception):
@@ -46,11 +47,30 @@ class Balance:
     trx: int
 
 
+@dataclass(frozen=True)
+class Account:
+    """계정 상태. exists=False면 아직 활성화되지 않은 주소(TRX를 한 번도 받은 적 없음)."""
+    exists: bool
+    is_contract: bool = False
+    trx: int = 0
+    energy: int = 0          # 지금 쓸 수 있는 에너지 (한도 - 사용량)
+    bandwidth: int = 0       # 지금 쓸 수 있는 대역폭 (무료 + 스테이킹)
+    free_bandwidth: int = 0  # 그중 무료 대역폭
+
+
+@dataclass(frozen=True)
+class Simulation:
+    """USDT 전송을 실제로 보내지 않고 돌려 본 결과."""
+    energy: int              # 필요한 에너지
+    ok: bool                 # False면 보내는 쪽 잔액 부족 등으로 실패(이때 energy는 믿을 수 없다)
+
+
 class TronReader:
     def __init__(self, base: str, api_key: str = "") -> None:
         self.base, self.api_key = base.rstrip("/"), api_key
         self._session: aiohttp.ClientSession | None = None
         self._cache: dict[str, tuple[float, Balance]] = {}
+        self._fee: tuple[float, int] | None = None
 
     async def close(self) -> None:
         if self._session:
@@ -137,6 +157,67 @@ class TronReader:
         out = [d for d in (_parse_usdt(r, address) for r in usdt_rows) if d]
         out += [d for d in (_parse_trx(r, address) for r in trx_rows) if d]
         return sorted(out, key=lambda d: d.ts_ms)
+
+    async def account(self, address: str) -> Account:
+        """활성화 여부, 컨트랙트 여부, TRX, 지금 쓸 수 있는 에너지·대역폭."""
+        acct, res = await asyncio.gather(
+            self._post("/wallet/getaccount", {"address": address, "visible": True}),
+            self._post("/wallet/getaccountresource", {"address": address, "visible": True}),
+        )
+        if not acct:
+            return Account(exists=False)
+        try:
+            free = max(0, int(res.get("freeNetLimit") or 0) - int(res.get("freeNetUsed") or 0))
+            staked = max(0, int(res.get("NetLimit") or 0) - int(res.get("NetUsed") or 0))
+            energy = max(0, int(res.get("EnergyLimit") or 0) - int(res.get("EnergyUsed") or 0))
+            return Account(True, acct.get("type") == "Contract", int(acct.get("balance") or 0), energy, free + staked, free)
+        except (ValueError, TypeError):
+            raise TronError("계정 자원을 읽지 못했어요") from None
+
+    async def simulate_usdt(self, sender: str, to: str, value: int = 1) -> Simulation:
+        """sender가 to에게 USDT value를 보낼 때 드는 에너지. 받는 주소에 USDT가 없으면 두 배쯤 든다."""
+        to_hex = address_to_hex(to)
+        if not to_hex:
+            raise TronError("받는 주소가 올바르지 않아요")
+        body = await self._post("/wallet/triggerconstantcontract", {
+            "owner_address": sender, "contract_address": USDT_CONTRACT, "visible": True,
+            "function_selector": "transfer(address,uint256)",
+            "parameter": to_hex[2:].rjust(64, "0") + f"{value:064x}",
+        })
+        try:
+            energy = int(body["energy_used"])
+        except (KeyError, ValueError, TypeError):
+            raise TronError("모의 실행 결과를 읽지 못했어요") from None
+        failed = ((body.get("transaction") or {}).get("ret") or [{}])[0].get("ret") == "FAILED"
+        return Simulation(energy, ok=bool((body.get("result") or {}).get("result")) and not failed)
+
+    async def usdt_of(self, address: str) -> int:
+        """USDT 잔액(마이크로). 컨트랙트에 직접 묻기 때문에 아직 활성화되지 않은 주소도 정확하다."""
+        h = address_to_hex(address)
+        if not h:
+            raise TronError("주소가 올바르지 않아요")
+        body = await self._post("/wallet/triggerconstantcontract", {
+            "owner_address": address, "contract_address": USDT_CONTRACT, "visible": True,
+            "function_selector": "balanceOf(address)", "parameter": h[2:].rjust(64, "0"),
+        })
+        try:
+            return int((body.get("constant_result") or [""])[0] or "0", 16)
+        except (ValueError, TypeError, IndexError):
+            raise TronError("USDT 잔액을 읽지 못했어요") from None
+
+    async def energy_fee(self, now: float = 0.0) -> int:
+        """에너지가 없을 때 에너지 1당 태우는 TRX(sun). 체인 설정에서 읽고 1시간 기억한다."""
+        import time
+
+        now = now or time.time()
+        if self._fee and now - self._fee[0] < PARAMS_TTL:
+            return self._fee[1]
+        body = await self._get("/wallet/getchainparameters")
+        for p in body.get("chainParameter") or []:
+            if p.get("key") == "getEnergyFee":
+                self._fee = (now, int(p.get("value") or 0))
+                return self._fee[1]
+        raise TronError("에너지 수수료 설정을 찾지 못했어요")
 
     async def balance(self, address: str, now: float = 0.0, fresh: bool = False) -> Balance:
         import time

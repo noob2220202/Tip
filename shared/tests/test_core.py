@@ -13,6 +13,7 @@ from core.broadcast import models
 from core.broadcast.sender import CampaignSender
 from core.config import Channel
 from core.logging_setup import TokenMaskFilter
+from core.subscription import SubscriptionGate
 from core.texts import Texts
 from testkit.fixtures import ADMIN, cb_update, msg_update
 
@@ -259,3 +260,44 @@ def test_parse_time(text, expected):
     from core.clock import parse_time
 
     assert parse_time(text) == expected
+
+
+biz_router = Router(name="test_biz")
+
+
+@biz_router.business_message()
+async def _biz_echo(message: Message) -> None:
+    await message.answer("biz-ok")
+
+
+async def test_gate_checks_business_owner_not_counterpart(make_cfg, bot, tg, db):
+    from testkit.fixtures import biz_conn, biz_conn_update, biz_update
+
+    cfg = make_cfg(channels=[CH])
+    biz_router._parent_router = None
+    dp, _ = await assemble(cfg, bot, db, [biz_router], Texts(EXAMPLE_TEXTS))
+    tg.business["bc1"] = biz_conn(20)
+    await feed(dp, bot, biz_conn_update(20))                    # 연결 알림은 막지 않는다
+    tg.members[("@chan", 30)] = "member"                        # 상대만 가입
+    await feed(dp, bot, biz_update(30, 30, "hi"))
+    assert not [p for m, p in tg.sent if p.get("business_connection_id")]
+    assert any("가입했어요" in t for t in tg.texts_to(20))      # 안내는 주인에게 봇 대화로
+    assert not tg.texts_to(30)                                  # 상대에게는 아무것도 안 보낸다
+    tg.members[("@chan", 20)] = "member"
+    gate = next(m for m in dp.update.outer_middleware if isinstance(m, SubscriptionGate))
+    gate._biz_blocked.clear()
+    await feed(dp, bot, biz_update(30, 30, "hi"))
+    assert [p["text"] for m, p in tg.sent if p.get("business_connection_id")] == ["biz-ok"]
+
+
+async def test_gate_business_admin_owner_exempt_and_unknown_connection_dropped(make_cfg, bot, tg, db):
+    from testkit.fixtures import biz_conn, biz_update
+
+    cfg = make_cfg(channels=[CH])
+    biz_router._parent_router = None
+    dp, _ = await assemble(cfg, bot, db, [biz_router], Texts(EXAMPLE_TEXTS))
+    await feed(dp, bot, biz_update(30, 30, "hi", conn_id="missing"))
+    assert not tg.sent
+    tg.business["bc2"] = biz_conn(ADMIN, "bc2")
+    await feed(dp, bot, biz_update(30, 30, "hi", conn_id="bc2"))
+    assert [p["text"] for m, p in tg.sent] == ["biz-ok"]

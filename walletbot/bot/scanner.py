@@ -22,8 +22,8 @@ EMPTY_RETRY = 0.7          # 다음 블록이 아직 없을 때 다시 물어보
 
 
 class Scanner:
-    def __init__(self, db: aiosqlite.Connection, chain: TronReader, watcher: Watcher):
-        self.db, self.chain, self.watcher = db, chain, watcher
+    def __init__(self, db: aiosqlite.Connection, chain: TronReader, watcher: Watcher, energy=None):
+        self.db, self.chain, self.watcher, self.energy = db, chain, watcher, energy
 
     async def step(self, now: float | None = None) -> float:
         """다음 블록 하나를 처리하고, 다음 호출까지 기다릴 시간(초)을 돌려준다."""
@@ -43,8 +43,12 @@ class Scanner:
             await store.set_scan(self.db, head, int(now * 1000))
             return 0.0
         watch = await store.watched_hex(self.db)
-        if watch:
-            await self.watcher.notify_deposits(scan_block(block, watch))
+        pay = self.energy.watch() if self.energy else {}
+        if watch or pay:
+            found = scan_block(block, {**watch, **pay})
+            await self.watcher.notify_deposits(found)          # 결제 주소를 지갑으로 등록한 사람에게도 평소처럼 알린다
+            if pay:
+                await self.energy.on_deposits([d for d in found if d.to in pay.values()])
         await store.set_scan(self.db, block.number, block.ts_ms)
         # 다음 블록은 이 블록 시각 + 3초쯤에 생긴다. 이미 지났다면(밀렸다면) 기다리지 않고 바로 받는다
         return min(max(0.0, block.ts_ms / 1000 + BLOCK_SECONDS + 0.3 - now), BLOCK_SECONDS + 0.5)

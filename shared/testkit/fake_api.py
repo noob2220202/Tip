@@ -24,6 +24,7 @@ class FakeTelegram:
         self.server_error: set[int] = set()             # 이 사용자에게 보내면 502 (보내졌는지 알 수 없는 오류)
         self.bad_chats: set[str] = set()                # 이 채널을 조회하면 getChatMember가 400 (채널을 못 찾음)
         self.sent: list[tuple[str, dict[str, Any]]] = []   # 실제로 성공한 전송만 (calls에는 실패한 시도도 들어간다)
+        self.business: dict[str, dict] = {}             # 비즈니스 연결 id -> BusinessConnection (getBusinessConnection 응답)
         self._msg_id = 100
         self.runner: web.AppRunner | None = None
         self.base = ""
@@ -102,8 +103,13 @@ class FakeTelegram:
         if method == "getUpdates":
             await asyncio.sleep(0.05)
             return self._ok(self.queued.pop(bot_id, []))
-        if method in ("deleteWebhook", "answerCallbackQuery", "deleteMessage"):
+        if method in ("deleteWebhook", "answerCallbackQuery", "deleteMessage", "deleteBusinessMessages"):
             return self._ok(True)
+        if method == "getBusinessConnection":
+            conn = self.business.get(str(p.get("business_connection_id")))
+            if not conn:
+                return self._err(400, "Bad Request: BUSINESS_CONNECTION_INVALID")
+            return self._ok(conn)
         if method == "getChatMember":
             if str(p["chat_id"]) in self.bad_chats:
                 return self._err(400, "Bad Request: chat not found")

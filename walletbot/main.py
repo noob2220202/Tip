@@ -7,9 +7,10 @@ sys.path.insert(0, str(ROOT.parent / "shared"))
 
 from bot.handlers import router
 from bot.services import on_shutdown, on_startup
+from bot.energy import SCHEMA as ENERGY_SCHEMA
 from bot.store import SCHEMA
 from bot.texts import TEXTS
 from core import run_bot
 
 if __name__ == "__main__":
-    run_bot(ROOT, routers=[router], texts=TEXTS, schema=SCHEMA, on_startup=on_startup, on_shutdown=on_shutdown)
+    run_bot(ROOT, routers=[router], texts=TEXTS, schema=SCHEMA + ENERGY_SCHEMA, on_startup=on_startup, on_shutdown=on_shutdown)

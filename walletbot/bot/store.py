@@ -71,6 +71,16 @@ CREATE TABLE IF NOT EXISTS daily_times (
   last_sent  TEXT NOT NULL DEFAULT '',
   PRIMARY KEY (user_id, hhmm)
 );
+
+-- 텔레그램 비즈니스 연결(주인이 자기 DM에 봇을 붙인 것). 대화 내용은 저장하지 않는다
+CREATE TABLE IF NOT EXISTS biz_connections (
+  id          TEXT PRIMARY KEY,
+  owner_id    INTEGER NOT NULL,
+  chat_id     INTEGER NOT NULL,
+  enabled     INTEGER NOT NULL,
+  can_reply   INTEGER NOT NULL,
+  updated_at  INTEGER NOT NULL
+);
 """
 
 
@@ -293,4 +303,22 @@ async def due_balance(db: aiosqlite.Connection, before: int, limit: int) -> list
 
 async def set_balance(db: aiosqlite.Connection, address: str, usdt: int, trx: int, now: int) -> None:
     await db.execute("UPDATE watch_state SET usdt=?, trx=?, checked_at=? WHERE address=?", (usdt, trx, now, address))
+    await db.commit()
+
+
+# ---- 비즈니스 연결 ----
+
+async def get_biz(db: aiosqlite.Connection, conn_id: str) -> aiosqlite.Row | None:
+    async with db.execute("SELECT * FROM biz_connections WHERE id=?", (conn_id,)) as cur:
+        return await cur.fetchone()
+
+
+async def save_biz(db: aiosqlite.Connection, conn_id: str, owner_id: int, chat_id: int, enabled: bool,
+                   can_reply: bool, now: float | None = None) -> None:
+    await db.execute(
+        "INSERT INTO biz_connections(id, owner_id, chat_id, enabled, can_reply, updated_at) VALUES(?,?,?,?,?,?)"
+        " ON CONFLICT(id) DO UPDATE SET owner_id=excluded.owner_id, chat_id=excluded.chat_id,"
+        " enabled=excluded.enabled, can_reply=excluded.can_reply, updated_at=excluded.updated_at",
+        (conn_id, owner_id, chat_id, int(enabled), int(can_reply), int(now or time.time())),
+    )
     await db.commit()

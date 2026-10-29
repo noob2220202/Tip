@@ -14,6 +14,10 @@
 - 세 번째 봇은 `rankbot`(채팅 순위 봇을 사용자가 직접 만드는 서비스)이다. 관리 봇 하나가 토큰을 받으면 같은 프로세스에서 고객 봇이 폴링을 시작한다. 토큰은 Fernet으로 암호화해 저장하고(`TOKEN_KEY`), 봇 단위로 최소 글자·발표 요일/시간·온오프·이름·경품·응모 자격을 바꾼다. 자세한 내용은 `rankbot/README.md`.
 - 네 번째 봇은 `walletbot`(TRON 지갑 입금 알림·잔액·빗썸 시세/김프)이다. 사용자당 지갑 3개. 지갑마다 조회하지 않고 새 블록을 3초마다 받아 직접 걸러서(블록 스캔) 입금을 블록에 들어간 직후 한 번만 알린다(확정 표시 없음, 실패한 거래는 제외). TronGrid 호출 수가 지갑 수와 무관하다. 블록에 드러나지 않는 입금은 주기적 잔액 대조로 보충한다. 김프는 빗썸 USDT ÷ 무료 환율 API(USD/KRW)로 계산한다. 자세한 내용은 `walletbot/README.md`.
 - 다섯 번째 봇은 `giveaway`(기프트콘 이벤트)다. 관리자만 이벤트를 만들고, 봇 사용자 중 실행 시점에 필수 채널을 구독 중인 사람을 대상으로 추첨(N명에게 각자 다른 코드) 또는 전원 동일 발송을 한다. 코드는 한 번만 쓰므로 배정 기록을 먼저 남기고 보내며, 보내졌는지 불확실하면 코드를 되돌리지 않는다. 자세한 내용은 `giveaway/README.md`.
+- `walletbot`에 **에너지 임대**와 **텔레그램 비즈니스 명령**을 붙였다.
+  - 에너지 임대: 공급처 세 곳(Netts·CatFee·trxx)의 1시간 원가 중 가장 싼 값에 마진(기본 0, 홍보용)을 더해 판다. 주문마다 금액 끝자리(0.001 TRX)를 달리해서 금액만으로 입금을 찾고(메모 없음, 거래소 출금 가능), 입금은 블록 스캔으로 바로 잡는다. 공급처가 거절하면 다음 곳으로 넘어가고, 응답이 불확실하면 다른 곳으로 넘기지 않는다(같은 번호 재요청이 안전한 곳은 같은 번호로만 다시 묻고, 아닌 곳은 체인에서 에너지 도착만 확인). 끝은 항상 체인에서 받는 지갑의 에너지를 확인한 뒤 "보내셔도 됩니다"를 알린다. 서버에는 개인키가 없고 환불은 관리자가 수동으로 한다.
+  - 비즈니스: 주인이 자기 계정에 봇을 연결하면 DM 대화창에서 `/조회`(주소 잔액·에너지) `/시세` `/환율`(금액 환산)에 답한다. 주인이 직접 입력한 명령에만 답하고, 대화 내용은 저장하지 않는다(대화마다 마지막 주소 하나만 메모리에).
+- 구독 게이트는 비즈니스 메시지를 **연결한 주인** 기준으로 확인한다. 미가입이면 대화창에는 아무것도 보내지 않고(답장이 주인 이름으로 나가므로) 주인에게 봇 대화로 안내한다. 비즈니스 연결 업데이트 자체는 막지 않는다.
 - TRON 주소 검증(`core/tron.py`)과 시각 입력 해석(`core/clock.py`)은 여러 봇이 같이 쓰도록 `shared/core/`로 옮겼다.
 - `run_bot()`에 `on_shutdown` 훅을 추가했다(종료 때 DB를 닫기 전에 호출). 백그라운드 작업을 가진 봇이 정리하는 데 쓴다.
 - 봇마다 core를 복사하던 방식을 없애고 `shared/` 통합 폴더로 합쳤다. `bots/` 구조와 `tools/new_bot.py`는 없다. 새 봇은 `kakao/`를 참고해 `Tip/<봇>/` 폴더로 만든다.
@@ -73,8 +77,8 @@ Tip/                            # 저장소 (서버: /root/Tip)
 │   ├── .env.example            # BOT_TOKEN, ADMIN_IDS, TOKEN_KEY, MAX_BOTS_PER_USER
 │   └── ecosystem.config.js     # pm2 앱 `rankbot`
 ├── walletbot/                  # 봇: 지갑 입금 알림·잔액·시세/김프 (서버: /root/walletbot 링크)
-│   ├── main.py, bot/           # chain.py(TronGrid·블록 해석), scanner.py(블록 스캔), watcher.py(잔액 대조·김프·정기 알림), prices.py(빗썸·환율), store.py, notify.py, handlers/
-│   ├── .env.example            # BOT_TOKEN, ADMIN_IDS, TRONGRID_API_KEY, MAX_WALLETS_TOTAL, RECONCILE_MINUTES
+│   ├── main.py, bot/           # chain.py(TronGrid·블록 해석·계정 자원·모의 실행), scanner.py(블록 스캔), watcher.py(잔액 대조·김프·정기 알림), prices.py(빗썸·환율), energy.py(에너지 임대 주문·매칭·처리), suppliers.py(Netts·CatFee·trxx), store.py, notify.py, handlers/(start, quick, business, energy, wallets, alerts)
+│   ├── .env.example            # BOT_TOKEN, ADMIN_IDS, TRONGRID_API_KEY, MAX_WALLETS_TOTAL, RECONCILE_MINUTES, ENERGY_*, NETTS_*, CATFEE_*, TRXX_*
 │   └── ecosystem.config.js     # pm2 앱 `walletbot`
 ├── giveaway/                   # 봇: 기프트콘 이벤트 (서버: /root/giveaway 링크)
 │   ├── main.py, bot/           # engine.py(실행·코드 배정), eligibility.py(구독 확인), store.py, handlers/(admin, start)
@@ -113,6 +117,7 @@ Tip/                            # 저장소 (서버: /root/Tip)
 - 멤버십 결과는 짧게 캐시한다(기본 60초, 설정 가능).
 - API 오류 시 동작(허용/차단)은 설정으로 고른다.
 - 메시지, 콜백, 인라인 등 모든 update 유형에 적용한다. 단, `/start`는 안내 후 사용자를 등록한다.
+- 텔레그램 비즈니스 메시지는 보낸 사람이 아니라 봇을 연결한 주인 기준으로 확인하고, 미가입이면 주인에게 봇 대화로만 안내한다(대화창에는 보내지 않음).
 - 필수 채널 설정은 `chat_id`(`@username` 또는 숫자)와 가입 링크를 함께 적는다. 비공개 채널은 초대 링크를 직접 적는다.
 - 관리자는 게이트를 면제하는 것이 기본값이고, 설정으로 바꿀 수 있다.
 

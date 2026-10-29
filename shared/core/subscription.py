@@ -10,6 +10,7 @@ import aiosqlite
 from aiogram import BaseMiddleware, Bot, Dispatcher
 from aiogram.exceptions import TelegramAPIError
 from aiogram.types import (
+    BusinessConnection,
     CallbackQuery,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
@@ -25,10 +26,17 @@ from core.verifier import VerifierClient, VerifierError, channel_problems, is_jo
 log = logging.getLogger(__name__)
 
 CHECK_DATA = "gate:check"
+BIZ_CONN_TTL = 600      # 비즈니스 연결 정보(주인이 누구인지)를 기억하는 시간(초)
+BIZ_BLOCK_TTL = 60      # 미가입 주인의 비즈니스 메시지를 다시 확인하지 않고 버리는 시간(초)
+BIZ_NUDGE_EVERY = 3600  # 미가입 주인에게 가입 안내를 다시 보내는 최소 간격(초)
 
 
 class SubscriptionGate(BaseMiddleware):
-    """dp.update 바깥 미들웨어. 모든 update 유형에 적용한다."""
+    """dp.update 바깥 미들웨어. 모든 update 유형에 적용한다.
+
+    비즈니스 메시지(주인이 자기 대화에 봇을 연결한 것)는 대화 상대가 아니라 연결한 주인 기준으로 확인한다.
+    미가입이면 대화창에는 아무것도 보내지 않고(주인 이름으로 나가므로) 주인에게 봇 대화로 안내한다.
+    """
 
     def __init__(self, cfg: BotConfig, db: aiosqlite.Connection, texts: Texts):
         self.cfg = cfg
@@ -40,6 +48,9 @@ class SubscriptionGate(BaseMiddleware):
         # 게이트에 막힌 마지막 메시지. 가입 확인을 통과하면 이어서 처리한다.
         self._pending: dict[int, Update] = {}
         self.verifier = make_verifier(cfg)
+        self._biz: dict[str, tuple[float, BusinessConnection]] = {}   # 연결 id -> (받은 시각, 연결 정보)
+        self._biz_blocked: dict[int, float] = {}                       # 주인 id -> 미가입으로 확인한 시각
+        self._biz_nudged: dict[int, float] = {}                        # 주인 id -> 마지막 안내 시각
 
     def _cached_ok(self, user_id: int, ch: Channel) -> bool:
         return time.monotonic() - self._ok_cache.get((user_id, ch.chat_id), -1e9) < self.cfg.common.cache_ttl
@@ -96,6 +107,15 @@ class SubscriptionGate(BaseMiddleware):
         if user is None or not self.cfg.common.channels:
             return await handler(event, data)
 
+        if event.business_connection:
+            self._biz[event.business_connection.id] = (time.monotonic(), event.business_connection)
+            return await handler(event, data)
+        if event.deleted_business_messages:
+            return await handler(event, data)
+        biz = event.business_message or event.edited_business_message
+        if biz is not None:
+            return await self._business(handler, event, data, bot, biz)
+
         # /start는 안내 전에 먼저 등록한다
         msg = event.message
         if msg and msg.text and msg.text.split("@")[0].split()[0] == "/start":
@@ -128,10 +148,49 @@ class SubscriptionGate(BaseMiddleware):
             await cb.answer(self.texts.get("gate_missing", missing=", ".join(c.title or str(c.chat_id) for c in missing)), show_alert=True)
         return None
 
+    async def _connection(self, bot: Bot, conn_id: str | None) -> BusinessConnection | None:
+        if not conn_id:
+            return None
+        hit = self._biz.get(conn_id)
+        if hit and time.monotonic() - hit[0] < BIZ_CONN_TTL:
+            return hit[1]
+        try:
+            conn = await bot.get_business_connection(conn_id)
+        except TelegramAPIError as e:
+            log.warning("비즈니스 연결 조회 실패 %s: %s", conn_id, e)
+            return None
+        self._biz[conn_id] = (time.monotonic(), conn)
+        return conn
+
+    async def _business(self, handler, event: Update, data: dict[str, Any], bot: Bot, msg: Message) -> Any:
+        conn = await self._connection(bot, msg.business_connection_id)
+        if conn is None:
+            return None
+        owner = conn.user.id
+        if self.cfg.common.exempt_admins and owner in self.cfg.admin_ids:
+            return await handler(event, data)
+        now = time.monotonic()
+        if now - self._biz_blocked.get(owner, -1e9) < BIZ_BLOCK_TTL:
+            return None
+        missing = await self.missing(bot, owner)
+        if not missing:
+            self._biz_blocked.pop(owner, None)
+            return await handler(event, data)
+        self._biz_blocked[owner] = now
+        if now - self._biz_nudged.get(owner, -1e9) >= BIZ_NUDGE_EVERY:
+            self._biz_nudged[owner] = now
+            try:
+                await bot.send_message(conn.user_chat_id, self.texts.get("gate_intro", count=len(missing)),
+                                       reply_markup=self._keyboard(missing))
+            except TelegramAPIError as e:
+                log.warning("비즈니스 주인 %s에게 가입 안내 실패: %s", owner, e)
+        return None
+
     async def _on_check(self, cb: CallbackQuery, bot: Bot, user_id: int) -> None:
         # 확인 버튼은 항상 최신 상태를 보도록 캐시를 비운다
         for key in [k for k in self._ok_cache if k[0] == user_id]:
             del self._ok_cache[key]
+        self._biz_blocked.pop(user_id, None)
         missing = await self.missing(bot, user_id)
         if missing:
             names = ", ".join(c.title or str(c.chat_id) for c in missing)

@@ -11,8 +11,10 @@ from datetime import datetime, timedelta, timezone
 from aiogram.types import InlineKeyboardButton as Btn
 from aiogram.types import InlineKeyboardMarkup as Kb
 
+from decimal import Decimal
+
 from bot import money
-from bot.chain import Balance, Deposit
+from bot.chain import Account, Balance, Deposit
 from bot.prices import Quote
 from core.style import esc
 
@@ -35,8 +37,10 @@ TEXTS: dict[str, list[str]] = {
         "2️⃣ 등록한 시점부터 <b>들어오는 입금</b>을 알려 드립니다. 이전 내역은 알리지 않습니다.\n"
         "3️⃣ <b>💰 잔액</b>, <b>📈 시세</b>는 언제든 조회하실 수 있습니다.\n"
         "4️⃣ <b>🔔 알림 설정</b>에서 최소 알림 금액, 김프 조건, 정기 시세를 정하십시오.</blockquote>\n\n"
-        "⌨️ <b>/지갑</b> <b>/잔액</b> <b>/시세</b> <b>/알림</b> · 입력 취소는 <b>/cancel</b>\n\n"
-        "ℹ️ 입금이 블록에 들어가면 보통 <b>몇 초 안에</b> 알려 드립니다.",
+        "⌨️ <b>/지갑</b> <b>/잔액</b> <b>/시세</b> <b>/알림</b> <b>/에너지</b> · 입력 취소는 <b>/cancel</b>\n"
+        "🔎 <b>/조회</b> <code>T주소</code> · 💱 <b>/환율</b> <code>100</code>, <code>10만원</code>, <code>50trx</code>\n\n"
+        "ℹ️ 입금이 블록에 들어가면 보통 <b>몇 초 안에</b> 알려 드립니다.\n"
+        "🤝 <b>/조회 /시세 /환율</b>은 텔레그램 비즈니스로 연결하면 <b>내 DM 대화창</b>에서도 쓰실 수 있습니다. (메뉴의 🤝 비즈니스 연결)",
     ],
 }
 
@@ -70,7 +74,8 @@ def menu_kb() -> Kb:
     return Kb(inline_keyboard=[
         [Btn(text="💼 내 지갑", callback_data="w"), Btn(text="💰 잔액", callback_data="bal")],
         [Btn(text="📈 시세", callback_data="px"), Btn(text="🔔 알림 설정", callback_data="al")],
-        [Btn(text="❓ 사용 방법", callback_data="help")],
+        [Btn(text="⚡ 에너지 임대", callback_data="en")],
+        [Btn(text="🤝 비즈니스 연결", callback_data="biz"), Btn(text="❓ 사용 방법", callback_data="help")],
     ])
 
 
@@ -267,3 +272,101 @@ def rule_alert(r, q: Quote) -> str:
 
 def daily_text(q: Quote) -> str:
     return price_text(q, "🕘 <b>정기 시세</b>")
+
+
+# ---- /조회 ----
+
+LOOKUP_ASK = ("🔎 조회할 <b>TRON 주소</b>를 함께 보내 주십시오.\n"
+              "예) <code>/조회 T...</code> · 주소가 담긴 메시지에 답장하며 <code>/조회</code>")
+
+
+def lookup_text(address: str, usdt: int, acct: Account, quote: Quote | None) -> str:
+    def krw(micro: int, price: float) -> str:
+        return f" (≈ {money.won(micro, price):,}원)" if quote else ""
+
+    lines = [f"💵 USDT — <b>{money.fmt(usdt)}</b>" + krw(usdt, quote.usdt_krw if quote else 0),
+             f"🪙 TRX — <b>{money.fmt(acct.trx)}</b>" + krw(acct.trx, quote.trx_krw if quote else 0)]
+    if quote and usdt and acct.trx:
+        lines.append(f"💰 합계 ≈ <b>{money.won(usdt, quote.usdt_krw) + money.won(acct.trx, quote.trx_krw):,}원</b>")
+    if not acct.exists:
+        state = "⚪ 아직 <b>활성화되지 않은</b> 주소입니다. (TRX를 받은 적이 없음)"
+    elif acct.is_contract:
+        state = "📜 <b>컨트랙트</b> 주소입니다. 개인 지갑이 아닙니다."
+    else:
+        state = f"⚡ 에너지 <b>{acct.energy:,}</b> · 📶 대역폭 <b>{acct.bandwidth:,}</b>"
+    out = (f"🔎 <b>지갑 조회</b>\n<code>{address}</code>\n\n<blockquote>" + "\n".join(lines) + f"\n{state}\n"
+           f"🔗 <a href=\"{SCAN_ADDR.format(address)}\">TRONSCAN에서 보기</a></blockquote>")
+    return out + ("\n\n" + _basis(quote) if quote else "")
+
+
+# ---- /환율 ----
+
+RATE_BAD = ("💱 금액을 이해하지 못했습니다.\n"
+            "예) <code>/환율 100</code> (USDT) · <code>/환율 10만원</code> · <code>/환율 50trx</code> · <code>/환율 $20</code>")
+
+
+def _n(d: Decimal, places: int = 2) -> str:
+    q = d.quantize(Decimal(1).scaleb(-places)) if places else d.quantize(Decimal(1))
+    return f"{q:,.{places}f}"
+
+
+def rate_text(q: Quote, amount: tuple[Decimal, str] | None = None) -> str:
+    usdt, trx = Decimal(str(q.usdt_krw)), Decimal(str(q.trx_krw))
+    fx = Decimal(str(q.fx)) if q.fx else None
+    if amount is None:
+        kimp = f" (김프 {q.kimp:+.2f}%)" if q.kimp is not None else ""
+        fx_line = f"🌐 1 USD — <b>{_n(fx)}원</b>\n" if fx else ""
+        body = (f"{fx_line}💵 1 USDT — <b>{_n(usdt, 0)}원</b>{kimp}\n🪙 1 TRX — <b>{_n(trx)}원</b>")
+        tip = "\n\n💡 금액을 붙이면 바로 계산합니다. <code>/환율 100</code> · <code>/환율 10만원</code> · <code>/환율 50trx</code>"
+        return f"💱 <b>환율</b>\n\n<blockquote>{body}</blockquote>\n\n{_basis(q)}{tip}"
+    value, unit = amount
+    if unit == "USDT":
+        won = value * usdt
+        head, rows = f"💵 <b>{_n(value)} USDT</b>", [f"= <b>{_n(won, 0)}원</b>", f"= {_n(won / trx)} TRX"]
+    elif unit == "TRX":
+        won = value * trx
+        head, rows = f"🪙 <b>{_n(value)} TRX</b>", [f"= <b>{_n(won, 0)}원</b>", f"= {_n(won / usdt)} USDT"]
+    elif unit == "KRW":
+        head = f"🇰🇷 <b>{_n(value, 0)}원</b>"
+        rows = [f"= <b>{_n(value / usdt)} USDT</b>", f"= {_n(value / trx)} TRX"]
+        if fx:
+            rows.append(f"= {_n(value / fx)} USD (기준 환율)")
+    else:
+        if not fx:
+            return "⚠️ 기준 환율을 가져오지 못해 달러는 계산할 수 없습니다. 잠시 뒤에 다시 시도해 주십시오."
+        won = value * fx
+        head = f"🌐 <b>{_n(value)} USD</b>"
+        rows = [f"= <b>{_n(won, 0)}원</b> (기준 환율)", f"= {_n(won / usdt)} USDT (빗썸)"]
+    return f"💱 <b>환율 계산</b>\n\n<blockquote>{head}\n" + "\n".join(rows) + f"</blockquote>\n\n{_basis(q)}"
+
+
+# ---- 비즈니스 연결 ----
+
+def business_guide(username: str) -> str:
+    return (
+        "🤝 <b>비즈니스 연결</b>\n\n"
+        "봇을 내 계정에 연결하면 <b>다른 사람과의 DM 대화창</b>에서 바로 쓰실 수 있습니다.\n\n"
+        "<blockquote>🔎 <b>/조회</b> <code>T주소</code> — 지갑 잔액(USDT·TRX, 원화)과 에너지\n"
+        "   주소가 담긴 메시지에 <b>답장</b>하며 <code>/조회</code>만 쳐도 됩니다. 대화에 나온 마지막 주소도 찾아 드립니다.\n"
+        "📈 <b>/시세</b> — 빗썸 USDT·TRX, 김프\n"
+        "💱 <b>/환율</b> <code>100</code> · <code>10만원</code> · <code>50trx</code> — 바로 계산</blockquote>\n\n"
+        "<b>📌 연결 방법</b>\n"
+        "<blockquote>1️⃣ 텔레그램 <b>설정</b> → <b>텔레그램 비즈니스</b> → <b>챗봇</b>\n"
+        f"2️⃣ 봇 아이디 <code>@{esc(username)}</code> 입력\n"
+        "3️⃣ 권한에서 <b>메시지 답장</b>을 켜 주십시오\n"
+        "4️⃣ 대화창에서 <code>/조회 T...</code>처럼 입력</blockquote>\n\n"
+        "🔒 명령어는 <b>연결하신 본인</b>이 입력할 때만 동작합니다. 대화 상대가 입력해도 반응하지 않습니다.\n"
+        "🔒 봇은 명령어와 지갑 주소만 처리하고 <b>대화 내용을 저장하지 않습니다.</b>\n"
+        "ℹ️ 메뉴 이름은 앱 버전에 따라 조금 다를 수 있습니다. 봇이 보낸 답장은 상대에게 <b>내가 보낸 메시지</b>로 보입니다."
+    )
+
+
+def business_connected(enabled: bool, can_reply: bool) -> str:
+    if not enabled:
+        return "🤝 비즈니스 연결이 <b>해제</b>되었습니다. 대화창에서 더 이상 명령어에 답하지 않습니다."
+    if not can_reply:
+        return ("🤝 비즈니스 연결은 되었지만 <b>메시지 답장 권한</b>이 꺼져 있습니다.\n"
+                "설정 → 텔레그램 비즈니스 → 챗봇에서 <b>메시지 답장</b>을 켜 주십시오.")
+    return ("✅ <b>비즈니스 연결</b>이 완료되었습니다.\n\n"
+            "<blockquote>DM 대화창에서 <b>/조회</b> <code>T주소</code> · <b>/시세</b> · <b>/환율</b> <code>100</code>을 입력해 보십시오.</blockquote>\n"
+            "🔒 연결하신 본인이 입력할 때만 답합니다.")

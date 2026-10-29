@@ -49,3 +49,10 @@ def address_to_hex(addr: str) -> str | None:
     for ch in addr:
         n = n * 58 + _B58.index(ch)
     return n.to_bytes(25, "big")[:21].hex()
+
+
+def find_address(text: str | None) -> str | None:
+    """글 안에서 체크섬이 맞는 TRON 주소를 찾아 마지막 것을 돌려준다. 없으면 None."""
+    found = [m.group(0) for m in re.finditer(r"(?<![1-9A-HJ-NP-Za-km-z])" + _TRON_RE.pattern + r"(?![1-9A-HJ-NP-Za-km-z])",
+                                             text or "")]
+    return next((a for a in reversed(found) if is_tron_address(a)), None)

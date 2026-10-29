@@ -4,8 +4,8 @@ from __future__ import annotations
 import asyncio
 
 import aiosqlite
-from aiogram import F, Router
-from aiogram.filters import Command, CommandStart, StateFilter
+from aiogram import Bot, F, Router
+from aiogram.filters import Command, CommandObject, CommandStart, StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, LinkPreviewOptions, Message
 
@@ -43,9 +43,13 @@ async def show(target: Message | CallbackQuery, text: str, kb) -> None:
 
 
 @router.message(CommandStart())
-async def start(message: Message, db: aiosqlite.Connection, texts: Texts, state: FSMContext) -> None:
+async def start(message: Message, command: CommandObject, db: aiosqlite.Connection, texts: Texts,
+                state: FSMContext, bot: Bot) -> None:
     await state.clear()
     await users.register(db, message.from_user.id, message.from_user.username)
+    if (command.args or "").startswith("bizChat"):     # 비즈니스 대화의 '봇 관리' 버튼에서 왔다
+        await message.answer(T.business_guide((await bot.me()).username), reply_markup=T.back_kb())
+        return
     await message.answer(texts.get("start"), reply_markup=T.menu_kb())
 
 
@@ -77,13 +81,27 @@ async def help_cb(cb: CallbackQuery, texts: Texts) -> None:
     await show(cb, texts.get("help"), T.menu_kb())
 
 
+@router.message(Command("business"))
+async def business_cmd(message: Message, bot: Bot) -> None:
+    await show(message, T.business_guide((await bot.me()).username), T.back_kb())
+
+
+@router.callback_query(F.data == "biz")
+async def business_cb(cb: CallbackQuery, bot: Bot) -> None:
+    await show(cb, T.business_guide((await bot.me()).username), T.back_kb())
+
+
 # ---- 시세 ----
 
-async def _price(prices: Prices) -> tuple[str, object]:
+async def price_text_of(prices: Prices) -> str:
     try:
-        return T.price_text(await prices.get()), T.refresh_kb("px")
+        return T.price_text(await prices.get())
     except PriceError:
-        return T.PRICE_FAIL, T.refresh_kb("px")
+        return T.PRICE_FAIL
+
+
+async def _price(prices: Prices) -> tuple[str, object]:
+    return await price_text_of(prices), T.refresh_kb("px")
 
 
 @router.message(Command("price"))
