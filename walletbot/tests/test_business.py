@@ -182,7 +182,7 @@ async def test_gate_checks_owner_not_counterpart(make_env):
     await connect(e)
     await biz(e, OWNER, f"/조회 {W1}")
     assert biz_sent(e) == []                                  # 주인이 미가입 → 대화창에는 아무것도 안 보낸다
-    assert any("가입했어요" in t for t in e.tg.texts_to(OWNER))  # 주인에게 봇 대화로 안내
+    assert any("구독했습니다" in t for t in e.tg.texts_to(OWNER))  # 주인에게 봇 대화로 안내
     n = len(e.tg.texts_to(OWNER))
     await biz(e, OWNER, f"/조회 {W1}")
     assert len(e.tg.texts_to(OWNER)) == n                     # 안내는 자주 보내지 않는다
@@ -252,11 +252,19 @@ async def test_deleted_or_edited_address_is_forgotten(env):
 async def test_reply_failure_is_explained_to_owner_once(env):
     setup_wallet(env)
     await connect(env)
-    env.tg.server_error.add(PEER)                             # 대화창 답장이 막힘(24시간 규칙 등)
+    env.tg.forbidden.add(PEER)                                # 대화창 답장이 거절됨(24시간 규칙·권한)
     await biz(env, OWNER, f"/조회 {W1}")
     await biz(env, OWNER, f"/조회 {W1}")
     notes = [t for t in env.tg.texts_to(OWNER) if "답장하지 못했습니다" in t]
     assert len(notes) == 1 and "24시간" in notes[0]
+
+
+async def test_transient_reply_failure_is_not_blamed_on_24h_rule(env):
+    setup_wallet(env)
+    await connect(env)
+    env.tg.server_error.add(PEER)                             # 서버 오류처럼 일시적인 실패
+    await biz(env, OWNER, f"/조회 {W1}")
+    assert "다시 입력해 주십시오" in last(env, OWNER) and "24시간" not in last(env, OWNER)
 
 
 async def test_private_lookup_is_rate_limited(env):
@@ -289,3 +297,70 @@ async def test_node_error_is_not_shown_as_zero_usdt(env):
     await start(env)
     await say(env, U1, f"/조회 {W1}")
     assert "조회에 실패" in last(env, U1) and "0.00" not in last(env, U1)
+
+
+async def test_address_is_remembered_even_while_owner_is_not_subscribed(make_env):
+    e = await make_env(channels=[CH])
+    setup_wallet(e)
+    await connect(e)
+    await biz(e, PEER, f"제 주소 {W1}")                        # 주인이 아직 미가입이라 게이트에 막히는 메시지
+    e.tg.members[("@chan", OWNER)] = "member"
+    gate_of(e)._biz_blocked.clear()
+    await biz(e, OWNER, "/조회")
+    assert biz_sent(e) and W1 in biz_sent(e)[-1]["text"]
+
+
+async def test_bot_echo_is_not_remembered_and_edit_still_updates(env):
+    from aiogram.types import Update
+    from testkit.fixtures import _uid
+
+    setup_wallet(env)
+    setup_wallet(env, W2)
+    await connect(env)
+    upd = biz_update(PEER, PEER, f"주소 {W1}")
+    await env.dp.feed_update(env.bot, upd)
+    mid = upd.business_message.message_id
+    # 봇이 주인 대신 보낸 조회 결과(주소 포함)가 되돌아와도 기억하지 않는다
+    await env.dp.feed_update(env.bot, biz_update(OWNER, PEER, f"🔎 지갑 조회 {W1}",
+                                                 sender_business_bot={"id": 1, "is_bot": True, "first_name": "b"}))
+    edited = upd.business_message.model_dump(exclude_none=True)
+    edited.update(text=f"정정합니다 {W2}", edit_date=1)
+    _uid[0] += 1
+    await env.dp.feed_update(env.bot, Update.model_validate({"update_id": _uid[0], "edited_business_message": edited}))
+    await biz(env, OWNER, "/조회")
+    assert W2 in biz_sent(env)[-1]["text"] and mid
+
+
+async def test_newer_message_edited_to_add_address_wins(env):
+    from aiogram.types import Update
+    from testkit.fixtures import _uid
+
+    setup_wallet(env, W2)
+    await connect(env)
+    await biz(env, PEER, f"예전 주소 {W1}")
+    upd = biz_update(PEER, PEER, "새 주소는 잠시만요")
+    await env.dp.feed_update(env.bot, upd)
+    edited = upd.business_message.model_dump(exclude_none=True)
+    edited.update(text=f"새 주소 {W2}", edit_date=1)
+    _uid[0] += 1
+    await env.dp.feed_update(env.bot, Update.model_validate({"update_id": _uid[0], "edited_business_message": edited}))
+    await biz(env, OWNER, "/조회")
+    assert W2 in biz_sent(env)[-1]["text"]
+
+
+async def test_owner_who_subscribed_meanwhile_is_not_blocked(make_env):
+    e = await make_env(channels=[CH])
+    await connect(e)
+    await biz(e, PEER, "안녕하세요")                           # 미가입이라 잠깐 막힌 것으로 기억된다
+    e.tg.members[("@chan", OWNER)] = "member"
+    await say(e, OWNER, "/start")                             # 봇 대화에서 가입이 확인됨
+    await biz(e, OWNER, "/환율 1")
+    assert biz_sent(e) and "1,428원" in biz_sent(e)[-1]["text"]
+    assert not any("0곳" in t for t in e.tg.texts_to(OWNER))
+
+
+async def test_connection_without_reply_right_has_no_channel_buttons(make_env):
+    e = await make_env(channels=[CH])
+    await connect(e, can_reply=False)
+    sent = [p for m, p in e.tg.sent if m == "sendMessage" and str(p.get("chat_id")) == str(OWNER)][-1]
+    assert "답장 권한" in sent["text"] and not sent.get("reply_markup")

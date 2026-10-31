@@ -4,6 +4,7 @@
 - 대화창에는 결과만 올린다. 사용법 안내·오류·잘못 친 주소 안내는 주인에게 봇 대화로만 보낸다.
 - 대화 내용은 저장하지 않는다. '/조회'만 쳤을 때 쓰려고 대화마다 마지막으로 나온 지갑 주소 하나만(메시지 번호와 함께)
   메모리에 두고, 그 메시지가 지워지거나 고쳐지면 같이 지우거나 바꾼다. 재시작하면 모두 잊는다.
+  이 기록은 구독 확인보다 먼저 한다(main.py의 pre_gate). 주인이 잠깐 미가입이어도 대화에 나온 주소를 놓치지 않게.
 - 채널 구독 확인은 공통 게이트가 주인 기준으로 한다.
 """
 from __future__ import annotations
@@ -17,7 +18,8 @@ import aiosqlite
 from aiogram import BaseMiddleware, Bot, Router
 from aiogram.exceptions import TelegramAPIError
 from aiogram.filters import BaseFilter
-from aiogram.types import BusinessConnection, BusinessMessagesDeleted, LinkPreviewOptions, Message
+from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError
+from aiogram.types import BusinessConnection, BusinessMessagesDeleted, LinkPreviewOptions, Message, Update
 
 from bot import store
 from bot import texts as T
@@ -54,13 +56,13 @@ class Recent:
         return hit[1] if hit else None
 
     def edited(self, key: tuple[str, int], message_id: int, address: str | None) -> None:
-        """기억한 메시지가 고쳐졌으면 새 주소로 바꾸거나(주소가 없어졌으면) 지운다."""
+        """고쳐진 메시지: 기억한 것보다 새(같은) 메시지에 주소가 생겼으면 그것을 기억하고,
+        기억한 메시지에서 주소가 없어졌으면 지운다."""
         hit = self._d.get(key)
-        if hit and hit[0] == message_id:
-            if address:
-                self._d[key] = (message_id, address)
-            else:
-                del self._d[key]
+        if address and (hit is None or message_id >= hit[0]):
+            self.put(key, message_id, address)
+        elif hit and hit[0] == message_id and not address:
+            del self._d[key]
 
     def deleted(self, key: tuple[str, int], message_ids) -> None:
         hit = self._d.get(key)
@@ -75,17 +77,31 @@ RECENT = Recent()
 _fail_notice: dict[int, float] = {}
 
 
-class _Remember(BaseMiddleware):
-    """명령어인지와 상관없이, 대화에 지갑 주소가 나오면 마지막 것 하나만 기억한다."""
+def _human(m: Message) -> bool:
+    """사람이 쓴 메시지(봇이 주인 대신 보낸 답장·자동 응답이 아닌 것)."""
+    return m.sender_business_bot is None and not m.is_from_offline
 
-    async def __call__(self, handler, event: Message, data):
-        address = find_address(event.text or event.caption)
-        if address and event.business_connection_id:
-            RECENT.put((event.business_connection_id, event.chat.id), event.message_id, address)
+
+class AddressMemory(BaseMiddleware):
+    """구독 확인보다 먼저 모든 update에 붙는다(dp.update). 비즈니스 대화에 나온 지갑 주소를 기억하고,
+    그 메시지가 고쳐지거나 지워지면 같이 바꾸거나 지운다. 명령어인지와 상관없이 마지막 주소 하나만."""
+
+    async def __call__(self, handler, event: Update, data):
+        m = event.business_message
+        if m is not None and m.business_connection_id and _human(m):
+            address = find_address(m.text or m.caption)
+            if address:
+                RECENT.put((m.business_connection_id, m.chat.id), m.message_id, address)
+        e = event.edited_business_message
+        if e is not None and e.business_connection_id and _human(e):
+            RECENT.edited((e.business_connection_id, e.chat.id), e.message_id, find_address(e.text or e.caption))
+        d = event.deleted_business_messages
+        if d is not None:
+            RECENT.deleted((d.business_connection_id, d.chat.id), d.message_ids)
         return await handler(event, data)
 
 
-router.business_message.outer_middleware(_Remember())
+MEMORY = AddressMemory()
 
 
 async def owner_of(db: aiosqlite.Connection, bot: Bot, conn_id: str) -> aiosqlite.Row | None:
@@ -133,12 +149,15 @@ async def _reply(message: Message, bot: Bot, biz: aiosqlite.Row, text: str) -> N
     """대화창에 결과를 올린다. 막히면(24시간 규칙·권한) 주인에게 이유를 알린다."""
     try:
         await message.answer(text, link_preview_options=NO_PREVIEW)
-    except TelegramAPIError as e:
+    except (TelegramBadRequest, TelegramForbiddenError) as e:     # 24시간 규칙·권한 같은 거절
         log.info("비즈니스 답장 실패 chat=%s: %s", message.chat.id, e)
         now = time.time()
         if now - _fail_notice.get(biz["owner_id"], 0) >= FAIL_NOTICE_EVERY:
             _fail_notice[biz["owner_id"]] = now
             await _tell_owner(bot, biz, T.BIZ_REPLY_FAIL)
+    except TelegramAPIError as e:                                 # 일시적인 오류(호출 한도·네트워크·서버)
+        log.info("비즈니스 답장 일시 실패 chat=%s: %s", message.chat.id, e)
+        await _tell_owner(bot, biz, T.BIZ_REPLY_RETRY)
 
 
 async def _answer(message: Message, bot: Bot, biz: aiosqlite.Row, text: str, ok: bool) -> None:
@@ -153,7 +172,7 @@ async def connection(conn: BusinessConnection, db: aiosqlite.Connection, bot: Bo
     if prev is not None and (bool(prev["enabled"]), bool(prev["can_reply"])) == (conn.is_enabled, _can_reply(conn)):
         return
     missing, kb = [], None
-    if conn.is_enabled and gate is not None and gate.cfg.common.channels \
+    if conn.is_enabled and _can_reply(conn) and gate is not None and gate.cfg.common.channels \
             and not (gate.cfg.common.exempt_admins and conn.user.id in gate.cfg.admin_ids):
         missing = await gate.missing(bot, conn.user.id)
         kb = gate.keyboard(missing) if missing else None
@@ -195,13 +214,12 @@ async def biz_rate(message: Message, cmd: re.Match, biz: aiosqlite.Row, bot: Bot
     await _answer(message, bot, biz, *await rate(args_of(cmd), prices, tip=False))
 
 
+# 고친·지운 메시지는 AddressMemory가 처리한다. 여기서는 텔레그램이 이 업데이트들을 보내도록(allowed_updates) 받아만 둔다.
 @router.edited_business_message()
 async def biz_edited(message: Message) -> None:
-    if message.business_connection_id:
-        RECENT.edited((message.business_connection_id, message.chat.id), message.message_id,
-                      find_address(message.text or message.caption))
+    return None
 
 
 @router.deleted_business_messages()
 async def biz_deleted(event: BusinessMessagesDeleted) -> None:
-    RECENT.deleted((event.business_connection_id, event.chat.id), event.message_ids)
+    return None

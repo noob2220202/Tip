@@ -232,6 +232,10 @@ async def refund_cb(cb: CallbackQuery, state: FSMContext, energy: Desk) -> None:
     if not o or o["user_id"] != cb.from_user.id:
         await cb.answer("주문을 찾을 수 없습니다.", show_alert=True)
         return
+    if not await energy.can_refund(o):
+        await cb.answer()
+        await cb.message.answer(E.refund_not_allowed(energy.support))
+        return
     await state.set_state(Refund.address)
     await state.update_data(order_id=o["id"])
     await cb.message.answer(E.ASK_REFUND)
@@ -250,7 +254,7 @@ async def refund_msg(message: Message, state: FSMContext, energy: Desk) -> None:
     oid = (await state.get_data())["order_id"]
     await state.clear()
     o = await energy.set_refund(oid, message.from_user.id, address)
-    await message.answer(E.refund_saved(o) if o else E.REFUND_NOT_ALLOWED, reply_markup=E.back_kb())
+    await message.answer(E.refund_saved(o) if o else E.refund_not_allowed(energy.support), reply_markup=E.back_kb())
 
 
 # ───────────── 끝난 단계의 버튼 ─────────────
@@ -297,5 +301,6 @@ async def admin_msg(message: Message, command: CommandObject, cfg: BotConfig, en
     if not o:
         await message.answer("주문을 찾을 수 없습니다.")
         return
-    ok = await notifier.send(o["user_id"], E.admin_message(o, parts[1]), E.refund_kb(o["id"]))
+    kb = E.refund_kb(o["id"]) if await energy.can_refund(o) else None
+    ok = await notifier.send(o["user_id"], E.admin_message(o, parts[1]), kb)
     await message.answer("📩 보냈습니다." if ok else "⚠️ 보내지 못했습니다(손님이 봇을 차단했을 수 있습니다).")

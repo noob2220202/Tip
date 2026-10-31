@@ -158,7 +158,7 @@ async def delete_ask(cb: CallbackQuery, db: aiosqlite.Connection) -> None:
     if not w:
         await cb.answer(T.NOT_FOUND, show_alert=True)
         return
-    await show(cb, f"🗑 <b>{T.name_of(w)}</b> 지갑을 삭제할까요?\n\n<blockquote>이 지갑의 입금 알림이 중단됩니다.</blockquote>",
+    await show(cb, f"🗑 <b>{T.name_of(w)}</b> 지갑을 삭제하시겠습니까?\n\n<blockquote>이 지갑의 입금 알림이 중단됩니다.</blockquote>",
                T.confirm_kb(w["id"]))
 
 

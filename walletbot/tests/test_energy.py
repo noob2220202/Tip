@@ -787,3 +787,118 @@ async def test_faq_uses_configured_minutes_and_texts_are_formal(make_env):
     assert "뭔가요" not in t and "되나요" not in t and "무엇입니까" in t
     await press(e, U1, "en:guide")
     assert "지금 0" in last(e, U1)
+
+
+async def test_review_order_is_not_completed_by_another_orders_energy(make_env):
+    s1, s2 = FakeSupplier("s1", 16, mode="uncertain"), FakeSupplier("s2", 20)
+    e = await make_env(suppliers=[s1, s2])
+    ready(e)
+    a = await buy(e)
+    await pay(e, a["amount"], "pa")
+    now = time.time()
+    for i in range(EN.UNCERTAIN_MAX):
+        await e.desk.tick(now + i * 30)
+    assert (await e.desk.get(a["id"]))["status"] == "review"
+    s1.mode = "reject"                                       # 손님이 기다리다 다시 주문 → 다른 공급처가 보낸다
+    b = await buy(e)
+    await pay(e, b["amount"], "pb")
+    await e.desk.tick(now + 400)
+    assert (await e.desk.get(b["id"]))["status"] == "done"
+    assert (await e.desk.get(a["id"]))["status"] == "review"  # B의 에너지로 A를 완료하지 않는다
+    assert any("다른 주문도 있어" in t for t in admin_texts(e))
+    assert not any("자동으로 완료되었습니다" in t for t in admin_texts(e))
+
+
+async def test_chain_only_order_sharing_wallet_goes_to_review(make_env):
+    s1 = FakeSupplier("s1", 16, mode=["uncertain"])
+    s1.idempotent = False                                    # trxx처럼 다시 보내지 않고 체인만 보는 공급처
+    s2 = FakeSupplier("s2", 20)
+    e = await make_env(suppliers=[s1, s2])
+    ready(e)
+    a = await buy(e)
+    await pay(e, a["amount"], "pa")
+    now = time.time()
+    await e.desk.tick(now)
+    assert (await e.desk.get(a["id"]))["status"] == "delivered"
+    s1.mode = "reject"
+    b = await buy(e)
+    await pay(e, b["amount"], "pb")
+    await e.desk.tick(now + 3)
+    assert (await e.desk.get(b["id"]))["status"] == "done"
+    assert (await e.desk.get(a["id"]))["status"] == "review"
+
+
+async def test_order_stuck_for_a_day_is_not_resent(make_env):
+    s1 = FakeSupplier("s1", 16)
+    e = await make_env(suppliers=[s1])
+    ready(e)
+    o = await buy(e)
+    await pay(e, o["amount"], "p")
+    await e.db.execute("UPDATE energy_orders SET status='ordering', supplier='s1', next_try=0, paid_at=? WHERE id=?",
+                       (int(time.time()) - 25 * 3600, o["id"]))
+    await e.db.commit()
+    await e.desk.tick()
+    assert s1.calls == [] and (await e.desk.get(o["id"]))["status"] == "review"
+
+
+async def test_refund_for_extra_wrong_payment_on_finished_order(env):
+    from core.tron import address_to_hex
+
+    ready(env)
+    o = await buy(env)
+    await pay(env, 1_000_000, "wrong", sender_hex=address_to_hex(W1))       # 먼저 잘못된 금액
+    await pay(env, o["amount"], "right")                                    # 그다음 정확한 금액
+    await env.desk.tick()
+    assert (await env.desk.get(o["id"]))["status"] == "done"
+    await press(env, U1, f"en:rf:{o['id']}")                                # 잘못 보낸 금액은 환불받을 수 있다
+    await say(env, U1, W2)
+    assert "환불 주소를 받았습니다" in last(env, U1)
+    assert any("금액이 다른 입금만" in t and "wrong" in t for t in admin_texts(env))
+
+
+async def test_no_refund_button_for_normal_finished_order(make_env):
+    e = await make_env(support="@help_desk")
+    ready(e)
+    o = await buy(e)
+    await pay(e, o["amount"], "p")
+    await e.desk.tick()
+    await say(e, ADMIN, f"/energy_msg {o['id']} 잘 받으셨습니까")
+    assert f"en:rf:{o['id']}" not in buttons(e, U1)
+    await press(e, U1, f"en:rf:{o['id']}")
+    assert "환불할 금액이 없습니다" in last(e, U1) and "@help_desk" in last(e, U1)
+
+
+async def test_error_before_supplier_call_does_not_block_other_orders(make_env, monkeypatch):
+    e = await make_env()
+    ready(e)
+    ready(e, W2)
+    a = await buy(e, U1, W1)
+    b = await buy(e, U2, W2)
+    await pay(e, a["amount"], "pa")
+    await pay(e, b["amount"], "pb")
+    real = e.desk._costs
+    calls = {"n": 0}
+
+    async def flaky(energy):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise RuntimeError("DB 잠김")
+        return await real(energy)
+
+    monkeypatch.setattr(e.desk, "_costs", flaky)
+    now = time.time()
+    await e.desk.tick(now)
+    ra = await e.desk.get(a["id"])
+    assert ra["status"] == "ordering" and ra["attempts"] == 1 and ra["next_try"] == int(now) + EN.PRICE_RETRY
+    assert (await e.desk.get(b["id"]))["status"] == "done"
+    await e.desk.tick(now + EN.PRICE_RETRY + 1)
+    assert (await e.desk.get(a["id"]))["status"] == "done"
+
+
+async def test_failed_message_does_not_claim_suppliers_were_silent(make_env):
+    e = await make_env(suppliers=[FakeSupplier("s1", 16, mode="reject")])
+    ready(e)
+    o = await buy(e)
+    await pay(e, o["amount"], "p")
+    await e.desk.tick()
+    assert "응답하지 않습니다" not in last(e, U1) and "받지 못했습니다" in last(e, U1)

@@ -305,7 +305,7 @@ def expired(o, late_minutes: int) -> str:
 
 def failed(o, support: str = "") -> str:
     return (f"⚠️ <b>주문 #{o['id']}</b> 에너지를 보내지 못했습니다.\n"
-            "<blockquote>공급처가 모두 응답하지 않습니다. 관리자가 확인 후 <b>환불</b>해 드리겠습니다.\n"
+            "<blockquote>공급처에서 에너지를 받지 못했습니다. 관리자가 확인 후 <b>환불</b>해 드리겠습니다.\n"
             "아래 버튼으로 <b>환불받을 본인 지갑 주소</b>를 보내 주십시오. (거래소에서 보내셨다면 거래소 주소가 아닌 "
             f"<b>개인 지갑 주소</b>로 받으셔야 합니다. 문의: {contact(support)})\n"
             "⚠️ <b>USDT는 아직 보내지 마십시오.</b> 지금 보내면 수수료로 TRX가 탑니다.</blockquote>")
@@ -333,7 +333,9 @@ def resolved(o, note: str) -> str:
 ASK_REFUND = ("💸 <b>환불받을 주소</b>\n\n환불받으실 <b>본인 TRON 지갑 주소</b>(<code>T</code>로 시작)를 보내 주십시오.\n"
               "<blockquote>⚠️ 거래소 입금 주소는 메모 없이 받으면 돈을 찾지 못할 수 있습니다. 개인 지갑 주소를 보내 주십시오.</blockquote>\n"
               "취소는 /cancel")
-REFUND_NOT_ALLOWED = "이 주문은 환불 주소를 받을 수 없는 상태입니다."
+def refund_not_allowed(support: str) -> str:
+    return (f"이 주문은 환불할 금액이 없습니다. 다른 문제라면 {contact(support)}에게 "
+            "<b>주문 번호와 거래 해시(TXID)</b>를 보내 주십시오.")
 STALE = "이 단계는 끝났습니다. ⚡ 에너지 사기를 다시 눌러 주십시오."
 
 
@@ -355,9 +357,16 @@ def admin_unknown(d: Deposit, why: str, o=None, username: str | None = None) -> 
             f"<a href=\"{SCAN_TX.format(d.txid)}\">거래 보기</a></blockquote>")
 
 
+def ref_line(o) -> str:
+    """공급처에 보낸 주문 번호(관리자가 공급처에서 찾아볼 때)."""
+    ref = o["ref"] or f"e{o['id']}"
+    sup = f" · 공급처 번호 <code>{esc(o['supplier_ref'])}</code>" if o["supplier_ref"] else ""
+    return f"주문 번호 <code>{esc(ref)}</code>{sup}"
+
+
 def _order_lines(o, username: str | None) -> str:
     refund = f"\n💸 손님이 알려 준 환불 주소 <code>{esc(o['refund_to'])}</code>" if o["refund_to"] else ""
-    return (f"손님 {user_tag(o['user_id'], username)}\n"
+    return (f"손님 {user_tag(o['user_id'], username)}\n{ref_line(o)}\n"
             f"받을 지갑 <code>{esc(o['receiver'])}</code> · {o['energy']:,}\n"
             f"받은 금액 {trx(o['amount'])} TRX · 보낸 주소 <code>{esc(o['payer'] or '-')}</code>\n"
             f"입금 <code>{esc(o['txid'] or '-')}</code>{refund}")
@@ -366,7 +375,8 @@ def _order_lines(o, username: str | None) -> str:
 def admin_review(o, supplier: str, why: str, username: str | None = None) -> str:
     return (f"🔍 <b>에너지 주문 #{o['id']} 확인 필요</b> ({esc(supplier)})\n"
             f"<blockquote>{esc(why)[:300]}\n{_order_lines(o, username)}</blockquote>\n"
-            "1시간 안에 체인에서 에너지가 보이면 자동으로 완료됩니다. 공급처에서 접수 여부를 확인한 뒤 "
+            "1시간 안에 체인에서 에너지가 보이면 자동으로 완료됩니다(같은 지갑의 다른 주문이 없을 때). "
+            "공급처에서 접수 여부를 확인한 뒤 "
             f"<code>/energy_done {o['id']} 메모</code>로 정리해 주십시오. (메모는 손님에게도 보입니다)")
 
 
@@ -377,14 +387,24 @@ def admin_failed(o, why: str, username: str | None = None) -> str:
             f"환불한 뒤 <code>/energy_done {o['id']} 환불했습니다</code>로 정리해 주십시오. (메모는 손님에게도 보입니다)")
 
 
-def admin_refund_to(o, username: str | None = None) -> str:
+def admin_refund_to(o, username: str | None = None, mismatches=()) -> str:
+    extra = "".join(f"\n⚠️ 금액이 다른 입금 {money.fmt(p['value'])} TRX · <code>{esc(p['txid'])}</code>" for p in mismatches)
+    what = ("\n이 주문은 처리되었습니다. <b>금액이 다른 입금만</b> 환불해 주십시오."
+            if mismatches and o["status"] not in ("failed", "review", "awaiting", "expired", "cancelled") else "")
     return (f"💸 <b>에너지 주문 #{o['id']} 환불 주소 도착</b> ({STATUS.get(o['status'], o['status'])})\n"
-            f"<blockquote>{_order_lines(o, username)}</blockquote>")
+            f"<blockquote>{_order_lines(o, username)}{extra}</blockquote>{what}")
 
 
 def admin_auto_done(o) -> str:
-    return (f"✅ <b>에너지 주문 #{o['id']}</b> 확인 필요였던 주문이 체인에서 에너지가 보여 자동으로 완료되었습니다. "
-            "환불하지 마십시오.")
+    return (f"✅ <b>에너지 주문 #{o['id']}</b> 확인 필요였던 주문이 체인에서 에너지가 보여 자동으로 완료되었습니다.\n"
+            f"<blockquote>{ref_line(o)}</blockquote>\n"
+            "손님이 다른 곳에서 받은 에너지일 수도 있으니 환불 전에 공급처 주문 내역에서 청구 여부를 확인해 주십시오.")
+
+
+def admin_shared(o) -> str:
+    return (f"🔍 <b>에너지 주문 #{o['id']}</b> 받을 지갑에 에너지가 보이지만, 같은 지갑의 다른 주문도 있어 "
+            "이 주문 것인지 알 수 없습니다. 자동 완료하지 않았습니다.\n"
+            f"<blockquote>{ref_line(o)}</blockquote>\n공급처 주문 내역을 확인한 뒤 정리해 주십시오.")
 
 
 def admin_low(name: str, bal: int | None) -> str:
@@ -397,7 +417,7 @@ def admin_summary(stats: dict, balances: dict, attention, suppliers: list[str], 
     bal = "\n".join(f"• {esc(n)} — " + (f"{trx(balances[n])} TRX" if balances.get(n) is not None else "확인 전/실패")
                     for n in suppliers) or "• 없음"
     counts = " · ".join(f"{STATUS.get(k, k)} {v['n']}" for k, v in sorted(stats.items())) or "주문 없음"
-    att = "\n".join(f"#{o['id']} {STATUS.get(o['status'])} · {esc(o['note'][:60])}"
+    att = "\n".join(f"#{o['id']} {STATUS.get(o['status'])} · <code>{esc(o['ref'] or '')}</code> · {esc(o['note'][:60])}"
                     + (f" · 환불 주소 <code>{esc(o['refund_to'])}</code>" if o["refund_to"] else "")
                     for o in attention) or "없음"
     return ("⚡ <b>에너지 임대 현황</b> (최근 24시간)\n\n"

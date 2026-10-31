@@ -99,6 +99,7 @@ async def assemble(
     texts: Texts,
     data: Mapping[str, Any] | None = None,
     gate_enabled: bool = True,
+    pre_gate: Sequence[BaseMiddleware] = (),
 ) -> tuple[Dispatcher, CampaignSender]:
     """Dispatcher를 조립한다. 테스트에서도 같은 경로를 쓴다."""
     dp = Dispatcher(storage=MemoryStorage())
@@ -108,6 +109,8 @@ async def assemble(
     tracker = InflightTracker()
     dp.update.outer_middleware(tracker)    # 가장 바깥에서 모든 update를 추적
     dp["tracker"] = tracker
+    for mw in pre_gate:                    # 구독 확인과 상관없이 모든 update에 먼저 돌아야 하는 봇 전용 미들웨어
+        dp.update.outer_middleware(mw)
     if gate_enabled:
         gate = SubscriptionGate(cfg, db, texts)
         gate.dp = dp
@@ -159,6 +162,7 @@ async def _main(
     on_startup: Callable[[Bot, Any, BotConfig], Awaitable[Mapping[str, Any] | None]] | None,
     gate: bool,
     on_shutdown: Callable[[Mapping[str, Any]], Awaitable[None]] | None = None,
+    pre_gate: Sequence[BaseMiddleware] = (),
 ) -> None:
     cfg = load_bot_config(bot_dir)
     db = await open_db(cfg.db_path, schema)
@@ -167,7 +171,7 @@ async def _main(
     extra = dict(data or {})
     if on_startup:
         extra.update(await on_startup(bot, db, cfg) or {})
-    dp, sender = await assemble(cfg, bot, db, routers, texts, extra, gate_enabled=gate)
+    dp, sender = await assemble(cfg, bot, db, routers, texts, extra, gate_enabled=gate, pre_gate=pre_gate)
     check_task = None
     try:
         me = await bot.get_me()
@@ -197,6 +201,7 @@ def run_bot(
     on_startup: Callable[[Bot, Any, BotConfig], Awaitable[Mapping[str, Any] | None]] | None = None,
     gate: bool = True,
     on_shutdown: Callable[[Mapping[str, Any]], Awaitable[None]] | None = None,
+    pre_gate: Sequence[BaseMiddleware] = (),
 ) -> None:
     """봇 폴더의 main.py에서 이 한 줄로 공통 기능을 붙인다.
 
@@ -206,9 +211,10 @@ def run_bot(
     on_startup: (bot, db, cfg)를 받아 추가 주입값 dict를 돌려주는 async 훅
     gate: False면 채널 가입 게이트를 붙이지 않는다 (검수 봇 자신용)
     on_shutdown: 종료할 때 DB를 닫기 전에 불린다. on_startup이 돌려준 주입값 dict를 받는다 (백그라운드 작업 정리용)
+    pre_gate: 구독 게이트보다 먼저 모든 update에 붙일 미들웨어 (게이트에 막히는 update도 봐야 하는 기록용)
     """
     setup_logging()
     try:
-        asyncio.run(_main(Path(bot_dir), routers, texts, schema, data, on_startup, gate, on_shutdown))
+        asyncio.run(_main(Path(bot_dir), routers, texts, schema, data, on_startup, gate, on_shutdown, pre_gate))
     except (KeyboardInterrupt, SystemExit):
         pass

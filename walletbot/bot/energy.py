@@ -105,6 +105,8 @@ PRICE_RETRY_MAX = 10         # 이만큼(약 5분) 계속 못 가져오면 실�
 VERIFY_SECONDS = 120         # 공급처 성공 뒤 체인에서 에너지가 보일 때까지 기다리는 시간
 REVIEW_WATCH = 3600          # 확인 필요로 넘긴 주문도 결제 뒤 이 시간 동안은 체인에서 에너지가 보이는지 계속 본다
 REVIEW_EVERY = 15            # 그 확인 간격(초)
+SHARED_WINDOW = 3600         # 같은 지갑의 다른 주문이 이 시간 안에 결제됐으면 보이는 에너지가 어느 주문 것인지 알 수 없다
+REPLAY_MAX = 23 * 3600       # 결제 후 이보다 오래 지난 주문은 같은 번호로 다시 보내지 않는다(Netts 중복 방지 키는 24시간)
 BALANCE_EVERY = 600          # 공급처 잔고 확인 간격(초)
 ALERT_EVERY = 1800
 USER_ORDERS_PER_HOUR = 10    # 결제 없이 주문만 반복해 끝자리를 다 쓰지 못하게
@@ -302,16 +304,25 @@ class Desk:
         await self.db.commit()
         return cur.rowcount == 1
 
+    async def mismatches(self, order_id: int) -> list[aiosqlite.Row]:
+        """이 주문 손님의 지갑에서 들어온, 금액이 다른 입금(환불 대상)."""
+        async with self.db.execute("SELECT * FROM energy_payments WHERE order_id=? AND kind='mismatch' ORDER BY ts_ms",
+                                   (order_id,)) as cur:
+            return list(await cur.fetchall())
+
+    async def can_refund(self, o: aiosqlite.Row) -> bool:
+        """환불 주소를 받을 수 있는 주문: 처리되지 못한 주문이거나, 금액이 다른 입금이 따로 들어온 주문."""
+        return o["status"] in REFUNDABLE or bool(await self.mismatches(o["id"]))
+
     async def set_refund(self, order_id: int, user_id: int, address: str) -> aiosqlite.Row | None:
         """손님이 알려 준 환불 주소를 남기고 관리자에게 알린다."""
-        marks = ",".join("?" * len(REFUNDABLE))
-        cur = await self.db.execute(f"UPDATE energy_orders SET refund_to=? WHERE id=? AND user_id=? AND status IN ({marks})",
-                                    (address, order_id, user_id, *REFUNDABLE))
-        await self.db.commit()
-        if cur.rowcount != 1:
-            return None
         o = await self.get(order_id)
-        await self.notifier.admins(E.admin_refund_to(o, await self.who(user_id)))
+        if o is None or o["user_id"] != user_id or not await self.can_refund(o):
+            return None
+        await self.db.execute("UPDATE energy_orders SET refund_to=? WHERE id=?", (address, order_id))
+        await self.db.commit()
+        o = await self.get(order_id)
+        await self.notifier.admins(E.admin_refund_to(o, await self.who(user_id), await self.mismatches(order_id)))
         return o
 
     async def _move(self, order_id: int, frm: tuple[str, ...], to: str, **fields) -> bool:
@@ -485,6 +496,9 @@ class Desk:
             if s is None:
                 await self._to_review(o, o["supplier"], "결과를 모르는 공급처가 설정에서 빠졌습니다", now)
                 return
+            if now - (o["paid_at"] or now) > REPLAY_MAX:
+                await self._to_review(o, s.name, "하루 가까이 멈춘 뒤라 같은 번호로 다시 보내지 않았습니다", now)
+                return
             if not s.idempotent:                  # 다시 보내면 두 번 살 수 있다 → 체인에서 에너지가 왔는지만 본다
                 await self._check_chain(o, s.name, "결과를 모르는 채로 재시작", now)
                 return
@@ -589,7 +603,14 @@ class Desk:
                 log.info("에너지 확인 실패 #%s: %s", o["id"], e)
                 continue                          # 체인을 못 읽었으면 시간 초과로 보지 않는다
             if acct.energy >= o["need"]:
-                if await self._move(o["id"], ("delivered",), "done", done_at=int(now)):
+                if not o["supplier_ref"] and await self._shared(o):
+                    # 공급처 확인 없이 체인만 보는 주문인데 같은 지갑에 다른 주문도 있었다 → 이 주문의 에너지인지 알 수 없다
+                    if await self._move(o["id"], ("delivered",), "review", note="같은 지갑의 다른 주문과 겹쳐 확인 필요"):
+                        o = await self.get(o["id"])
+                        await self.notifier.send(o["user_id"], E.review(o))
+                        await self.alert(f"rev:{o['id']}", E.admin_review(o, o["supplier"], "같은 지갑의 다른 주문과 겹침",
+                                                                          await self.who(o["user_id"])), now, 0)
+                elif await self._move(o["id"], ("delivered",), "done", done_at=int(now)):
                     await self.notifier.send(o["user_id"], E.done(await self.get(o["id"]), acct.energy))
             elif now - (o["delivered_at"] or now) > VERIFY_SECONDS:
                 if await self._move(o["id"], ("delivered",), "review", note="공급처 성공 응답 뒤 체인에서 에너지가 보이지 않음"):
@@ -608,10 +629,22 @@ class Desk:
                 acct = await self.chain.account(o["receiver"])
             except TronError:
                 continue
-            if acct.energy >= o["need"] and await self._move(o["id"], ("review",), "done", done_at=int(now),
-                                                             note="체인에서 에너지 확인되어 자동 완료"):
+            if acct.energy < o["need"]:
+                continue
+            if await self._shared(o):              # 같은 지갑의 다른 주문 에너지일 수 있다 → 관리자에게 맡긴다
+                await self.alert(f"shared:{o['id']}", E.admin_shared(o), now, REVIEW_WATCH)
+                continue
+            if await self._move(o["id"], ("review",), "done", done_at=int(now), note="체인에서 에너지 확인되어 자동 완료"):
                 await self.notifier.send(o["user_id"], E.done(await self.get(o["id"]), acct.energy))
                 await self.alert(f"auto:{o['id']}", E.admin_auto_done(o), now, 0)
+
+    async def _shared(self, o: aiosqlite.Row) -> bool:
+        """같은 지갑으로 가는 다른 주문이 비슷한 때 결제됐는지(그러면 보이는 에너지를 이 주문 것이라고 할 수 없다)."""
+        async with self.db.execute(
+            "SELECT 1 FROM energy_orders WHERE receiver=? AND id<>? AND txid IS NOT NULL AND paid_at>=? LIMIT 1",
+            (o["receiver"], o["id"], (o["paid_at"] or 0) - SHARED_WINDOW),
+        ) as cur:
+            return await cur.fetchone() is not None
 
     async def _check_balances(self, now: float) -> None:
         for s in self.suppliers.values():

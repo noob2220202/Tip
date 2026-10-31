@@ -3,6 +3,7 @@ import pytest
 from bot.energy import SCHEMA as ENERGY_SCHEMA
 from bot.energy import Desk, migrate
 from bot.handlers import router
+from bot.handlers.business import MEMORY
 from bot.notify import Notifier
 from bot.prices import Prices
 from bot.scanner import Scanner
@@ -56,7 +57,8 @@ async def make_env(make_cfg, bot, tg):
         router._parent_router = None
         dp, _ = await assemble(cfg, bot, db, [router], Texts(TEXTS),
                                {"chain": reader, "prices": prices, "notifier": notifier, "watcher": watcher,
-                                "max_wallets_total": 30, "scanner": scanner, "energy": desk})
+                                "max_wallets_total": 30, "scanner": scanner, "energy": desk},
+                               pre_gate=[MEMORY])
         e = Env()
         e.tron, e.market, e.db, e.dp, e.bot, e.tg, e.watcher, e.chain, e.prices, e.notifier, e.cfg = (
             tron, market, db, dp, bot, tg, watcher, reader, prices, notifier, cfg)

@@ -175,12 +175,15 @@ class SubscriptionGate(BaseMiddleware):
                 self._biz_blocked.pop(owner, None)
                 return await handler(event, data)
             self._biz_blocked[owner] = now
+        missing = [ch for ch in self.cfg.common.channels if not self._cached_ok(owner, ch)]
+        if not missing:                    # 그사이 봇 대화에서 가입이 확인됐다
+            self._biz_blocked.pop(owner, None)
+            return await handler(event, data)
         # 주인이 직접 명령어를 쳤을 때만 안내한다(상대가 보내는 평범한 메시지마다 주인을 귀찮게 하지 않게)
         typed = (msg.text or msg.caption or "").lstrip()
         if msg.from_user and msg.from_user.id == owner and typed[:1] in ("/", "／") \
                 and now - self._biz_nudged.get(owner, -1e9) >= BIZ_NUDGE_EVERY:
             self._biz_nudged[owner] = now
-            missing = [ch for ch in self.cfg.common.channels if not self._cached_ok(owner, ch)]
             try:
                 await bot.send_message(conn.user_chat_id, self.texts.get("gate_business", count=len(missing)),
                                        reply_markup=self.keyboard(missing))

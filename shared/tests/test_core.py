@@ -303,3 +303,22 @@ async def test_gate_business_admin_owner_exempt_and_unknown_connection_dropped(m
     tg.business["bc2"] = biz_conn(ADMIN, "bc2")
     await feed(dp, bot, biz_update(30, 30, "hi", conn_id="bc2"))
     assert [p["text"] for m, p in tg.sent] == ["biz-ok"]
+
+
+async def test_pre_gate_middleware_sees_updates_the_gate_blocks(make_cfg, bot, tg, db):
+    from aiogram import BaseMiddleware
+
+    seen = []
+
+    class Record(BaseMiddleware):
+        async def __call__(self, handler, event, data):
+            seen.append(event.update_id)
+            return await handler(event, data)
+
+    cfg = make_cfg(channels=[CH])
+    example_router._parent_router = None
+    dp, _ = await assemble(cfg, bot, db, [example_router], Texts(EXAMPLE_TEXTS), pre_gate=[Record()])
+    upd = msg_update(77, "/ping")
+    await feed(dp, bot, upd)
+    assert seen == [upd.update_id]                              # 미가입이라 게이트에 막혀도 먼저 본다
+    assert not any(t.startswith("퐁") for t in tg.texts_to(77))
