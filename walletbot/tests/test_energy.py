@@ -32,7 +32,7 @@ async def buy(e, uid=U1, receiver=W1, has_usdt=True, recipient=None):
     return await e.desk.open_order(uid)
 
 
-async def pay(e, amount, txid, token="TRX", sender_hex=None):
+async def pay(e, amount, txid, token="TRX", sender_hex=None, ts_ms=None):
     from bot import store
 
     if await store.get_scan(e.db) is None:
@@ -40,7 +40,7 @@ async def pay(e, amount, txid, token="TRX", sender_hex=None):
     tx = FakeTron.tx_trx(PAYH, amount, txid) if token == "TRX" else FakeTron.tx_usdt(PAYH, amount, txid)
     if sender_hex:
         tx["raw_data"]["contract"][0]["parameter"]["value"]["owner_address"] = sender_hex
-    e.tron.new_block([tx])
+    e.tron.new_block([tx], ts=ts_ms)
     while (await store.get_scan(e.db))["last_block"] < e.tron.head:
         await e.scanner.step()
 
@@ -100,10 +100,10 @@ async def test_full_flow_cheapest_supplier_and_delivery(env):
     assert "입금을 확인했습니다" in last(env, U1)
     await env.desk.tick()
     s1, s2 = env.suppliers
-    assert s1.calls == [(W1, 65_000, f"e{o['id']}")] and s2.calls == []         # 가장 싼 곳 한 번만
+    assert s1.calls == [(W1, 65_000, o["ref"])] and s2.calls == []              # 가장 싼 곳 한 번만
     done = await env.desk.get(o["id"])
     assert done["status"] == "done" and done["paid_cost"] == 1_040_000 and done["supplier"] == "s1"
-    assert "에너지 도착" in last(env, U1) and "65,000" in last(env, U1) and "dtx-e" in last(env, U1)
+    assert "에너지 도착" in last(env, U1) and "65,000" in last(env, U1) and f"dtx-{o['ref']}" in last(env, U1)
     await env.desk.tick()
     assert len(s1.calls) == 1                                                   # 다시 주문하지 않는다
 
@@ -208,7 +208,8 @@ async def test_status_and_order_list(env):
     ready(env)
     o = await buy(env)
     await press(env, U1, f"en:o:{o['id']}")
-    assert "입금 대기" in last(env, U1)
+    t = last(env, U1)                     # 결제 안내를 지우지 않고 금액·주소·기한을 그대로 보여 준다
+    assert "<code>1.04</code>" in t and f"<code>{PAY}</code>" in t and "분 이내" in t
     await press(env, U2, f"en:o:{o['id']}")
     assert env.tg.of("answerCallbackQuery")[-1].get("show_alert")
     await press(env, U1, "en:list")
@@ -241,9 +242,12 @@ async def test_amounts_of_recent_expired_orders_stay_reserved(env):
 async def test_new_order_cancels_previous_open_one(env):
     ready(env)
     a = await buy(env)
-    await press(env, U1, f"en:x:{a['id']}")
-    b = await buy(env)
+    q = await env.desk.quote(a["need"])
+    b = await env.desk.create(U1, W1, a["need"], q)                            # 취소하지 않고 바로 새 주문
+    assert (await env.desk.get(a["id"]))["status"] == "cancelled"
     assert b["id"] != a["id"] and b["amount"] != a["amount"]
+    await pay(env, a["amount"], "pay-old")                                     # 앞 주문 금액도 아직 받을 수 있다
+    assert (await env.desk.get(a["id"]))["status"] == "paid" and (await env.desk.get(b["id"]))["status"] == "awaiting"
 
 
 async def test_order_rate_limit_per_user(env):
@@ -258,12 +262,29 @@ async def test_order_rate_limit_per_user(env):
 
 # ───────────── 입금 매칭 ─────────────
 
+async def age(e, o, created_ago, expired_ago):
+    """주문을 과거에 만든 것처럼 시각을 옮긴다."""
+    now = int(time.time())
+    await e.db.execute("UPDATE energy_orders SET created_at=?, expires_at=?, status='expired' WHERE id=?",
+                       (now - created_ago, now - expired_ago, o["id"]))
+    await e.db.commit()
+
+
 async def test_late_payment_within_window_is_processed(env):
     ready(env)
     o = await buy(env)
-    await env.desk.tick(time.time() + 700)
+    await age(env, o, 1500, 900)                    # 15분 전에 만료된 주문, 입금 블록은 지금(만료 + 15분)
     await pay(env, o["amount"], "late-1")
     assert (await env.desk.get(o["id"]))["status"] == "paid"
+
+
+async def test_payment_after_late_window_is_not_matched(env):
+    ready(env)
+    o = await buy(env)
+    await age(env, o, 2700, EN.LATE_SECONDS + 120)  # 만료 + 32분 뒤의 입금
+    await pay(env, o["amount"], "too-late")
+    assert (await env.desk.get(o["id"]))["status"] == "expired"
+    assert any("맞는 주문 없음" in t and "too-late" in t for t in admin_texts(env))
 
 
 async def test_payment_to_cancelled_order_still_processed(env):
@@ -363,7 +384,7 @@ async def test_uncertain_never_fails_over_and_retries_same_ref(make_env):
     assert len(s1.calls) == 1
     await e.desk.tick(now + 25)
     await e.desk.tick(now + 50)
-    assert [c[2] for c in s1.calls] == [f"e{o['id']}"] * 3 and s2.calls == []
+    assert [c[2] for c in s1.calls] == [o["ref"]] * 3 and s2.calls == []
     assert (await e.desk.get(o["id"]))["status"] == "done"
 
 
@@ -378,7 +399,7 @@ async def test_too_many_uncertain_goes_to_review(make_env):
         await e.desk.tick(now + i * 30)
     row = await e.desk.get(o["id"])
     assert row["status"] == "review" and len(s1.calls) == EN.UNCERTAIN_MAX
-    assert "관리자가 직접 확인" in last(e, U1) and any("확인 필요" in t for t in admin_texts(e))
+    assert "관리자가 확인한 결과" in last(e, U1) and any("확인 필요" in t for t in admin_texts(e))
 
 
 async def test_rejection_after_uncertain_is_not_failed_over(make_env):
@@ -426,7 +447,7 @@ async def test_restart_while_ordering_asks_same_supplier_again(make_env):
     await e.db.commit()
     await e.desk.recover()
     await e.desk.tick()
-    assert [c[2] for c in s1.calls] == [f"e{o['id']}"] and (await e.desk.get(o["id"]))["status"] == "done"
+    assert [c[2] for c in s1.calls] == [o["ref"]] and (await e.desk.get(o["id"]))["status"] == "done"
 
 
 async def test_delivery_not_seen_on_chain_goes_to_review(make_env):
@@ -530,3 +551,239 @@ async def test_restart_with_non_idempotent_supplier_checks_chain_only(make_env):
     await e.db.commit()
     await e.desk.tick()
     assert s1.calls == [] and (await e.desk.get(o["id"]))["status"] == "delivered"
+
+
+# ───────────── 검토에서 나온 문제의 재현 ─────────────
+
+async def test_payment_during_long_downtime_is_found_from_cursor(env):
+    ready(env)
+    o = await buy(env)
+    t0 = time.time()
+    await env.desk.tick(t0)                                                    # 평소처럼 돌던 중(확인 위치 기록)
+    env.tron.pay_trx(PAY, PAYH, o["amount"], "while-down")                     # 기한 안에 냈지만 봇이 꺼져 있었다
+    await env.desk.tick(t0 + 2500)                                             # 40분 넘게 지나 다시 켜짐
+    row = await env.desk.get(o["id"])
+    assert row["status"] == "done" and row["txid"] == "while-down"
+    assert not any("입금 시간이 지났습니다" in t for t in env.tg.texts_to(U1))
+
+
+async def test_cursor_moves_only_after_successful_fetch(env):
+    ready(env)
+    o = await buy(env)
+    t0 = time.time()
+    await env.desk.tick(t0)
+    before = await env.desk._cursor()
+    env.tron.fail = True
+    await env.desk.tick(t0 + 40)
+    assert await env.desk._cursor() == before                                  # 실패하면 위치를 옮기지 않는다
+    env.tron.fail = False
+    env.tron.pay_trx(PAY, PAYH, o["amount"], "after-fail")
+    await env.desk.tick(t0 + 80)
+    assert (await env.desk.get(o["id"]))["txid"] == "after-fail"
+
+
+async def test_duplicate_payment_is_not_credited_to_next_customer(env):
+    ready(env)
+    ready(env, W2)
+    a = await buy(env, U1, W1)
+    await pay(env, a["amount"], "a-1")
+    await env.desk.tick()
+    assert (await env.desk.get(a["id"]))["status"] == "done"
+    b = await buy(env, U2, W2)
+    assert b["amount"] != a["amount"]                                          # 끝난 주문 금액도 한동안 비켜 간다
+    await pay(env, a["amount"], "a-again")                                     # 같은 금액을 실수로 한 번 더
+    assert (await env.desk.get(b["id"]))["status"] == "awaiting"
+    assert any("맞는 주문 없음" in t and "a-again" in t for t in admin_texts(env))
+
+
+async def test_payment_prefers_order_created_before_it(env):
+    ready(env)
+    ready(env, W2)
+    a = await buy(env, U1, W1)
+    await age(env, a, 2000, 1500)
+    # 같은 금액의 새 주문이 생겼다(예약 기간이 끝난 경우를 흉내 내려고 직접 넣는다)
+    await env.db.execute("INSERT INTO energy_orders(user_id, receiver, need, energy, amount, cost, status, created_at,"
+                         " expires_at, ref) VALUES(?,?,?,?,?,?,?,?,?,?)",
+                         (U2, W2, 64_285, 65_000, a["amount"], 1, "awaiting", int(time.time()) + 30,
+                          int(time.time()) + 630, "ex"))
+    await env.db.commit()
+    await pay(env, a["amount"], "for-a", ts_ms=int(time.time() * 1000))
+    assert (await env.desk.get(a["id"]))["txid"] == "for-a"
+
+
+async def test_price_blip_is_retried_instead_of_failing(make_env):
+    s1 = FakeSupplier("s1", 16)
+    e = await make_env(suppliers=[s1])
+    ready(e)
+    o = await buy(e)
+    await pay(e, o["amount"], "p")
+    s1.mode = "price_fail"
+    now = time.time()
+    await e.desk.tick(now)
+    row = await e.desk.get(o["id"])
+    assert row["status"] == "ordering" and s1.calls == [] and "환불" not in last(e, U1)
+    s1.mode = "ok"
+    await e.desk.tick(now + EN.PRICE_RETRY + 1)
+    assert (await e.desk.get(o["id"]))["status"] == "done"
+
+
+async def test_price_never_comes_back_fails_after_retries(make_env):
+    s1 = FakeSupplier("s1", 16)
+    e = await make_env(suppliers=[s1])
+    ready(e)
+    o = await buy(e)
+    await pay(e, o["amount"], "p")
+    s1.mode = "price_fail"
+    now = time.time()
+    for i in range(EN.PRICE_RETRY_MAX):
+        await e.desk.tick(now + i * (EN.PRICE_RETRY + 1))
+    assert (await e.desk.get(o["id"]))["status"] == "failed" and s1.calls == []
+
+
+async def test_unexpected_error_does_not_block_other_orders(make_env):
+    s1 = FakeSupplier("s1", 16, mode=["crash", "ok", "ok"])
+    e = await make_env(suppliers=[s1, FakeSupplier("s2", 20)])
+    ready(e)
+    ready(e, W2)
+    a = await buy(e, U1, W1)
+    b = await buy(e, U2, W2)
+    await pay(e, a["amount"], "pa")
+    await pay(e, b["amount"], "pb")
+    now = time.time()
+    await e.desk.tick(now)
+    assert (await e.desk.get(a["id"]))["status"] == "ordering"                 # 결과를 모름 → 같은 곳에 다시
+    assert (await e.desk.get(b["id"]))["status"] == "done"                     # 다른 주문은 막히지 않는다
+    await e.desk.tick(now + EN.UNCERTAIN_RETRY + 1)
+    assert (await e.desk.get(a["id"]))["status"] == "done"
+    assert [c[2] for c in s1.calls if c[0] == W1] == [a["ref"], a["ref"]] and e.suppliers[1].calls == []
+
+
+async def test_crashing_price_lookup_skips_only_that_supplier(make_env):
+    e = await make_env(suppliers=[FakeSupplier("s1", 16, mode="price_crash"), FakeSupplier("s2", 20)])
+    ready(e)
+    o = await buy(e)
+    assert o["amount"] == 1_300_000
+    await pay(e, o["amount"], "p")
+    await e.desk.tick()
+    assert (await e.desk.get(o["id"]))["supplier"] == "s2"
+
+
+async def test_chain_errors_during_verify_do_not_time_out(make_env):
+    e = await make_env(suppliers=[FakeSupplier("s1", 16, deliver=False)])
+    ready(e)
+    o = await buy(e)
+    await pay(e, o["amount"], "p")
+    now = time.time()
+    await e.desk.tick(now)
+    e.tron.fail = True
+    await e.desk.tick(now + EN.VERIFY_SECONDS + 5)
+    assert (await e.desk.get(o["id"]))["status"] == "delivered"               # 체인을 못 읽었으면 실패로 보지 않는다
+    e.tron.fail = False
+    e.tron.delegate(W1, 65_000)
+    await e.desk.tick(now + EN.VERIFY_SECONDS + 10)
+    assert (await e.desk.get(o["id"]))["status"] == "done"
+
+
+async def test_review_order_completes_when_energy_shows_up(make_env):
+    s1 = FakeSupplier("s1", 16, mode="uncertain")
+    e = await make_env(suppliers=[s1])
+    ready(e)
+    o = await buy(e)
+    await pay(e, o["amount"], "p")
+    now = time.time()
+    for i in range(EN.UNCERTAIN_MAX):
+        await e.desk.tick(now + i * 30)
+    assert (await e.desk.get(o["id"]))["status"] == "review"
+    e.tron.delegate(W1, 65_000)                                                # 사실은 접수됐다
+    await e.desk.tick(now + 400)
+    assert (await e.desk.get(o["id"]))["status"] == "done" and "에너지 도착" in last(e, U1)
+    assert any("자동으로 완료" in t for t in admin_texts(e))
+
+
+async def test_failed_order_asks_refund_address_and_admin_closes_it(make_env):
+    e = await make_env(suppliers=[FakeSupplier("s1", 16, mode="reject")], support="@help_desk")
+    ready(e)
+    o = await buy(e)
+    await pay(e, o["amount"], "p")
+    await e.desk.tick()
+    assert "@help_desk" in last(e, U1) and f"en:rf:{o['id']}" in buttons(e, U1)
+    assert any("환불 필요" in t and f"tg://user?id={U1}" in t for t in admin_texts(e))
+    await press(e, U2, f"en:rf:{o['id']}")                                     # 남의 주문
+    assert e.tg.of("answerCallbackQuery")[-1].get("show_alert")
+    await press(e, U1, f"en:rf:{o['id']}")
+    await say(e, U1, "nope")
+    assert "올바른 TRON 주소가 아닙니다" in last(e, U1)
+    await say(e, U1, W2)
+    assert "환불 주소를 받았습니다" in last(e, U1)
+    assert (await e.desk.get(o["id"]))["refund_to"] == W2
+    assert any("환불 주소 도착" in t and W2 in t for t in admin_texts(e))
+    await say(e, ADMIN, "/energy_admin")
+    assert W2 in last(e, ADMIN)
+    await say(e, ADMIN, f"/energy_done {o['id']} 1.04 TRX 환불했습니다")
+    assert "관리자 확인이 끝났습니다" in last(e, U1) and "환불했습니다" in last(e, U1)
+
+
+async def test_mismatch_offers_refund_button_and_tags_user(env):
+    from core.tron import address_to_hex
+
+    ready(env)
+    o = await buy(env)
+    await pay(env, 1_000_000, "wrong", sender_hex=address_to_hex(W1))
+    assert f"en:rf:{o['id']}" in buttons(env, U1)
+    assert any("금액 불일치" in t and f"tg://user?id={U1}" in t for t in admin_texts(env))
+
+
+async def test_admin_can_message_customer(env):
+    ready(env)
+    o = await buy(env)
+    await say(env, ADMIN, f"/energy_msg {o['id']} 환불 주소를 알려 주십시오")
+    assert "관리자 메시지" in last(env, U1) and "환불 주소를 알려" in last(env, U1)
+    assert "보냈습니다" in last(env, ADMIN)
+    await say(env, U2, f"/energy_msg {o['id']} 장난")
+    assert not any("장난" in t for t in env.tg.texts_to(U1))
+
+
+async def test_old_buttons_get_an_answer(env):
+    ready(env)
+    await buy(env)
+    for data in ("en:ok", "en:r:1", "en:w:1"):
+        await press(env, U1, data)
+        assert env.tg.of("answerCallbackQuery")[-1].get("show_alert")
+
+
+async def test_menu_commands_work_while_waiting_for_an_address(env):
+    await start(env)
+    await press(env, U1, "en:buy")
+    await say(env, U1, "/지갑")
+    assert "내 지갑" in last(env, U1) and "올바른 TRON 주소" not in last(env, U1)
+
+
+async def test_supplier_refs_are_random_and_unique(env):
+    ready(env)
+    ready(env, W2)
+    a = await buy(env, U1, W1)
+    b = await buy(env, U2, W2)
+    assert a["ref"] != b["ref"] and a["ref"].startswith("e") and len(a["ref"]) == 17
+
+
+async def test_migrate_adds_new_columns_to_old_table(make_cfg):
+    from bot.energy import migrate
+    from core.db import open_db
+
+    db = await open_db(make_cfg().db_path, "CREATE TABLE IF NOT EXISTS energy_orders (id INTEGER PRIMARY KEY, status TEXT);")
+    await migrate(db)
+    cols = {r[1] for r in await db.execute_fetchall("PRAGMA table_info(energy_orders)")}
+    assert {"ref", "refund_to"} <= cols
+    await migrate(db)                                                          # 두 번 해도 괜찮다
+    await db.close()
+
+
+async def test_faq_uses_configured_minutes_and_texts_are_formal(make_env):
+    e = await make_env(ttl=300)
+    await start(e)
+    await press(e, U1, "en:faq")
+    t = last(e, U1)
+    assert "주문 시간(5분)" in t and "30분 안에" in t
+    assert "뭔가요" not in t and "되나요" not in t and "무엇입니까" in t
+    await press(e, U1, "en:guide")
+    assert "지금 0" in last(e, U1)

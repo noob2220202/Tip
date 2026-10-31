@@ -11,12 +11,6 @@ OWNER, PEER = 801, 802
 CH = Channel(chat_id="@chan", url="https://t.me/chan", title="채널")
 
 
-@pytest.fixture(autouse=True)
-def _fresh_memory():
-    business.RECENT._d.clear()
-    business._used.clear()
-
-
 def gate_of(e) -> SubscriptionGate:
     return next(m for m in e.dp.update.outer_middleware if isinstance(m, SubscriptionGate))
 
@@ -139,9 +133,10 @@ async def test_lookup_without_address_uses_last_address_in_chat(env):
     await biz(env, OWNER, "안녕하세요")
     await biz(env, OWNER, "/조회")
     assert W1 in biz_sent(env)[-1]["text"]
-    # 다른 대화의 주소는 섞이지 않는다
+    # 다른 대화의 주소는 섞이지 않고, 사용법 안내는 대화창이 아니라 주인에게만 간다
+    n = len(biz_sent(env))
     await biz(env, OWNER, "/조회", peer=999)
-    assert "를 함께 보내 주십시오" in biz_sent(env)[-1]["text"]
+    assert len(biz_sent(env)) == n and "회원님께만 보입니다" in last(env, OWNER)
 
 
 async def test_lookup_reply_to_address_message(env):
@@ -193,5 +188,104 @@ async def test_gate_checks_owner_not_counterpart(make_env):
     assert len(e.tg.texts_to(OWNER)) == n                     # 안내는 자주 보내지 않는다
     e.tg.members[("@chan", OWNER)] = "member"
     gate_of(e)._biz_blocked.clear()
-    await biz(e, OWNER, f"/조회 {W1}")
-    assert len(biz_sent(e)) == 1                              # 상대(PEER)는 가입하지 않아도 된다
+    await biz(e, PEER, f"제 주소 {W1}")                        # 상대(PEER)는 가입하지 않아도 되고, 주소도 기억된다
+    await biz(e, OWNER, "/조회")
+    assert len(biz_sent(e)) == 1 and W1 in biz_sent(e)[0]["text"]
+    assert all("가입" not in t for t in e.tg.texts_to(PEER))
+
+
+async def test_gate_nudges_owner_only_for_own_commands(make_env):
+    e = await make_env(channels=[CH])
+    await connect(e)
+    assert "구독" in last(e, OWNER)                            # 연결 안내부터 구독이 필요하다고 알린다
+    n = len(e.tg.texts_to(OWNER))
+    for _ in range(3):
+        await biz(e, PEER, "안녕하세요 그냥 대화")               # 상대의 평범한 메시지로는 주인을 귀찮게 하지 않는다
+    await biz(e, OWNER, "네 반갑습니다")
+    assert len(e.tg.texts_to(OWNER)) == n
+    await biz(e, OWNER, "/시세")
+    assert len(e.tg.texts_to(OWNER)) == n + 1 and "명령어를 <b>한 번 더</b>" in last(e, OWNER)
+
+
+async def test_hints_and_errors_go_only_to_owner(env):
+    setup_wallet(env)
+    await connect(env)
+    bad = W1[:-1] + ("a" if W1[-1] != "a" else "b")
+    await biz(env, PEER, f"제 주소 {W2}")
+    await biz(env, OWNER, f"/조회 {bad}")                     # 잘못 친 주소를 다른 주소로 대신 조회하지 않는다
+    assert biz_sent(env) == [] and "올바른 TRON 주소가 아닙니다" in last(env, OWNER)
+    await biz(env, OWNER, "/환율 abc")
+    assert biz_sent(env) == [] and "이해하지 못했습니다" in last(env, OWNER)
+    env.tron.fail = True
+    await biz(env, OWNER, f"/조회 {W1}")
+    assert biz_sent(env) == [] and "조회에 실패" in last(env, OWNER)
+    env.tron.fail = False
+    await biz(env, OWNER, "/환율")
+    assert "💡" not in biz_sent(env)[-1]["text"]               # 사용법 팁은 대화창에 올리지 않는다
+
+
+async def test_deleted_or_edited_address_is_forgotten(env):
+    from aiogram.types import Update
+    from testkit.fixtures import _uid
+
+    setup_wallet(env)
+    await connect(env)
+    upd = biz_update(PEER, PEER, f"주소 {W1}")
+    await env.dp.feed_update(env.bot, upd)
+    mid = upd.business_message.message_id
+    _uid[0] += 1
+    await env.dp.feed_update(env.bot, Update.model_validate({"update_id": _uid[0], "deleted_business_messages": {
+        "business_connection_id": "bc1", "chat": {"id": PEER, "type": "private"}, "message_ids": [mid]}}))
+    await biz(env, OWNER, "/조회")
+    assert biz_sent(env) == []
+    upd = biz_update(PEER, PEER, f"주소 {W1}")
+    await env.dp.feed_update(env.bot, upd)
+    edited = upd.business_message.model_dump(exclude_none=True)
+    edited.update(text=f"정정합니다 {W2}", edit_date=1)
+    _uid[0] += 1
+    await env.dp.feed_update(env.bot, Update.model_validate({"update_id": _uid[0], "edited_business_message": edited}))
+    setup_wallet(env, W2)
+    await biz(env, OWNER, "/조회")
+    assert W2 in biz_sent(env)[-1]["text"]
+
+
+async def test_reply_failure_is_explained_to_owner_once(env):
+    setup_wallet(env)
+    await connect(env)
+    env.tg.server_error.add(PEER)                             # 대화창 답장이 막힘(24시간 규칙 등)
+    await biz(env, OWNER, f"/조회 {W1}")
+    await biz(env, OWNER, f"/조회 {W1}")
+    notes = [t for t in env.tg.texts_to(OWNER) if "답장하지 못했습니다" in t]
+    assert len(notes) == 1 and "24시간" in notes[0]
+
+
+async def test_private_lookup_is_rate_limited(env):
+    setup_wallet(env)
+    await start(env)
+    for _ in range(21):
+        await say(env, U1, f"/조회 {W1}")
+    assert "너무 잦습니다" in last(env, U1)
+    await say(env, U1, f"/조회 {W1[:-1]}x")
+    assert "올바른 TRON 주소가 아닙니다" in last(env, U1)
+
+
+async def test_compound_korean_amounts(env):
+    await start(env)
+    await say(env, U1, "/환율 1억5천만")
+    assert "150,000,000원" in last(env, U1)
+    await say(env, U1, "/환율 1천만원")
+    assert "10,000,000원" in last(env, U1)
+
+
+async def test_guide_discloses_memory_and_24h_rule(env):
+    await say(env, U1, "/business")
+    t = last(env, U1)
+    assert "마지막으로 나온 지갑 주소 하나" in t and "24시간" in t
+
+
+async def test_node_error_is_not_shown_as_zero_usdt(env):
+    setup_wallet(env)
+    env.tron.const_error = True                               # 노드 오류가 HTTP 200 + result.code로 온다
+    await start(env)
+    await say(env, U1, f"/조회 {W1}")
+    assert "조회에 실패" in last(env, U1) and "0.00" not in last(env, U1)

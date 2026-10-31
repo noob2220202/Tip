@@ -167,11 +167,13 @@ class TronReader:
         if not acct:
             return Account(exists=False)
         try:
+            if not isinstance(res, dict):
+                raise TypeError("자원 응답 형식")
             free = max(0, int(res.get("freeNetLimit") or 0) - int(res.get("freeNetUsed") or 0))
             staked = max(0, int(res.get("NetLimit") or 0) - int(res.get("NetUsed") or 0))
             energy = max(0, int(res.get("EnergyLimit") or 0) - int(res.get("EnergyUsed") or 0))
             return Account(True, acct.get("type") == "Contract", int(acct.get("balance") or 0), energy, free + staked, free)
-        except (ValueError, TypeError):
+        except (ValueError, TypeError, AttributeError):
             raise TronError("계정 자원을 읽지 못했어요") from None
 
     async def simulate_usdt(self, sender: str, to: str, value: int = 1) -> Simulation:
@@ -188,8 +190,12 @@ class TronReader:
             energy = int(body["energy_used"])
         except (KeyError, ValueError, TypeError):
             raise TronError("모의 실행 결과를 읽지 못했어요") from None
-        failed = ((body.get("transaction") or {}).get("ret") or [{}])[0].get("ret") == "FAILED"
-        return Simulation(energy, ok=bool((body.get("result") or {}).get("result")) and not failed)
+        try:
+            failed = ((body.get("transaction") or {}).get("ret") or [{}])[0].get("ret") == "FAILED"
+            ok = (body.get("result") or {}).get("result") is True
+        except (AttributeError, IndexError, TypeError):
+            raise TronError("모의 실행 결과를 읽지 못했어요") from None
+        return Simulation(energy, ok=ok and not failed)
 
     async def usdt_of(self, address: str) -> int:
         """USDT 잔액(마이크로). 컨트랙트에 직접 묻기 때문에 아직 활성화되지 않은 주소도 정확하다."""
@@ -201,9 +207,13 @@ class TronReader:
             "function_selector": "balanceOf(address)", "parameter": h[2:].rjust(64, "0"),
         })
         try:
-            return int((body.get("constant_result") or [""])[0] or "0", 16)
-        except (ValueError, TypeError, IndexError):
-            raise TronError("USDT 잔액을 읽지 못했어요") from None
+            ok = (body.get("result") or {}).get("result") is True
+            raw = (body.get("constant_result") or [""])[0]
+            if not ok or not raw:             # 노드 오류는 HTTP 200에 result.code로 온다 → 0으로 보이면 안 된다
+                raise ValueError(str(body.get("result"))[:100])
+            return int(raw, 16)
+        except (ValueError, TypeError, IndexError, AttributeError) as e:
+            raise TronError(f"USDT 잔액을 읽지 못했어요: {e}") from None
 
     async def energy_fee(self, now: float = 0.0) -> int:
         """에너지가 없을 때 에너지 1당 태우는 TRX(sun). 체인 설정에서 읽고 1시간 기억한다."""
@@ -214,9 +224,15 @@ class TronReader:
             return self._fee[1]
         body = await self._get("/wallet/getchainparameters")
         for p in body.get("chainParameter") or []:
-            if p.get("key") == "getEnergyFee":
-                self._fee = (now, int(p.get("value") or 0))
-                return self._fee[1]
+            if isinstance(p, dict) and p.get("key") == "getEnergyFee":
+                try:
+                    fee = int(p.get("value") or 0)
+                except (TypeError, ValueError):
+                    break
+                if fee > 0:
+                    self._fee = (now, fee)
+                    return fee
+                break
         raise TronError("에너지 수수료 설정을 찾지 못했어요")
 
     async def balance(self, address: str, now: float = 0.0, fresh: bool = False) -> Balance:

@@ -13,8 +13,9 @@ from aiogram.types import CallbackQuery, Message
 from bot import energy_texts as E
 from bot import store
 from bot.chain import TronError, TronReader
-from bot.energy import Desk, Quote
+from bot.energy import LATE_SECONDS, USER_ORDERS_PER_HOUR, Desk, Quote
 from bot.handlers.start import NO_PREVIEW, PRIVATE, korean, show
+from bot.notify import Notifier
 from bot.prices import PriceError, Prices
 from core import users
 from core.config import BotConfig
@@ -24,11 +25,17 @@ QUOTE_SECONDS = 120          # 견적을 보여 준 뒤 이 시간이 지나면 
 
 router = Router(name="wallet_energy")
 router.message.filter(PRIVATE)
+# 입력 대기 중에도 /지갑 같은 명령어는 원래 메뉴로 가도록 주소 입력으로 받지 않는다
+TYPED = F.text & ~F.text.regexp(r"^\s*[/／]")
 
 
 class Buy(StatesGroup):
     receiver = State()
     recipient = State()
+
+
+class Refund(StatesGroup):
+    address = State()
 
 
 async def _krw(prices: Prices) -> float | None:
@@ -58,12 +65,12 @@ async def intro_cb(cb: CallbackQuery, state: FSMContext, energy: Desk, prices: P
 
 @router.callback_query(F.data == "en:guide")
 async def guide_cb(cb: CallbackQuery, energy: Desk) -> None:
-    await show(cb, E.GUIDE, E.intro_kb(energy.enabled))
+    await show(cb, E.guide(LATE_SECONDS // 60), E.intro_kb(energy.enabled))
 
 
 @router.callback_query(F.data == "en:faq")
 async def faq_cb(cb: CallbackQuery, energy: Desk) -> None:
-    await show(cb, E.FAQ, E.intro_kb(energy.enabled))
+    await show(cb, E.faq(energy.ttl // 60, LATE_SECONDS // 60, energy.support), E.intro_kb(energy.enabled))
 
 
 @router.callback_query(F.data == "en:list")
@@ -115,7 +122,7 @@ async def _take_receiver(target: Message, address: str, state: FSMContext, chain
     await target.answer(E.ask_recipient(address, acct.energy, acct.bandwidth, acct.trx), reply_markup=E.recipient_kb())
 
 
-@router.message(Buy.receiver, F.text)
+@router.message(Buy.receiver, TYPED)
 async def receiver_msg(message: Message, state: FSMContext, chain: TronReader, energy: Desk) -> None:
     await _take_receiver(message, message.text.strip(), state, chain, energy)
 
@@ -150,7 +157,7 @@ async def _quote(target: Message, state: FSMContext, energy: Desk, prices: Price
                                      energy.margin, data.get("bandwidth", 0)), reply_markup=E.quote_kb())
 
 
-@router.message(Buy.recipient, F.text)
+@router.message(Buy.recipient, TYPED)
 async def recipient_msg(message: Message, state: FSMContext, energy: Desk, prices: Prices) -> None:
     address = message.text.strip()
     if not is_tron_address(address):
@@ -182,7 +189,7 @@ async def confirm_cb(cb: CallbackQuery, state: FSMContext, energy: Desk, prices:
         await cb.message.answer(E.EXPIRED_QUOTE)
         await _quote(cb.message, state, energy, prices, data.get("recipient"), data.get("has_usdt"))
         return
-    if await energy.recent_count(cb.from_user.id, now) >= 10:
+    if await energy.recent_count(cb.from_user.id, now) >= USER_ORDERS_PER_HOUR:
         await cb.answer(E.TOO_MANY.replace("<b>", "").replace("</b>", ""), show_alert=True)
         return
     q = Quote(data["energy"], data["cost"], data["price"], data["supplier"], data["burn"])
@@ -205,7 +212,7 @@ async def status_cb(cb: CallbackQuery, energy: Desk) -> None:
         await cb.answer("주문을 찾을 수 없습니다.", show_alert=True)
         return
     kb = E.order_kb(o["id"]) if o["status"] == "awaiting" else E.status_kb(o["id"])
-    await show(cb, E.order_status(o), kb)
+    await show(cb, E.order_status(o, energy.pay_address, time.time()), kb)
 
 
 @router.callback_query(F.data.regexp(r"^en:x:\d+$"))
@@ -215,6 +222,43 @@ async def cancel_cb(cb: CallbackQuery, energy: Desk) -> None:
         await show(cb, f"❌ 주문 #{oid}을 취소했습니다. <b>이 금액은 보내지 마십시오.</b>", E.back_kb())
     else:
         await cb.answer("이미 처리 중이거나 끝난 주문입니다.", show_alert=True)
+
+
+# ───────────── 환불 주소 ─────────────
+
+@router.callback_query(F.data.regexp(r"^en:rf:\d+$"))
+async def refund_cb(cb: CallbackQuery, state: FSMContext, energy: Desk) -> None:
+    o = await energy.get(int(cb.data.split(":")[2]))
+    if not o or o["user_id"] != cb.from_user.id:
+        await cb.answer("주문을 찾을 수 없습니다.", show_alert=True)
+        return
+    await state.set_state(Refund.address)
+    await state.update_data(order_id=o["id"])
+    await cb.message.answer(E.ASK_REFUND)
+    await cb.answer()
+
+
+@router.message(Refund.address, TYPED)
+async def refund_msg(message: Message, state: FSMContext, energy: Desk) -> None:
+    address = message.text.strip()
+    if not is_tron_address(address):
+        await message.answer("❌ 올바른 TRON 주소가 아닙니다. <code>T</code>로 시작하는 34자리 주소를 확인해 주십시오.")
+        return
+    if address == energy.pay_address:
+        await message.answer(E.IS_PAY)
+        return
+    oid = (await state.get_data())["order_id"]
+    await state.clear()
+    o = await energy.set_refund(oid, message.from_user.id, address)
+    await message.answer(E.refund_saved(o) if o else E.REFUND_NOT_ALLOWED, reply_markup=E.back_kb())
+
+
+# ───────────── 끝난 단계의 버튼 ─────────────
+
+@router.callback_query(F.data.regexp(r"^en:(ok|r:[01]|w:\d+)$"))
+async def stale_cb(cb: CallbackQuery) -> None:
+    """견적·주소 단계가 끝났거나(주문 완료, 취소, 재시작) 다른 단계에서 누른 옛 버튼."""
+    await cb.answer(E.STALE, show_alert=True)
 
 
 # ───────────── 관리자 ─────────────
@@ -236,5 +280,22 @@ async def admin_done(message: Message, command: CommandObject, cfg: BotConfig, e
     if not parts or not parts[0].isdigit():
         await message.answer("사용법: <code>/energy_done 주문번호 메모</code>")
         return
-    ok = await energy.resolve(int(parts[0]), parts[1] if len(parts) > 1 else "관리자 처리")
-    await message.answer(f"☑️ 주문 #{parts[0]}을 처리됨으로 바꿨습니다." if ok else "실패·확인 필요 상태인 주문이 아닙니다.")
+    o = await energy.resolve(int(parts[0]), parts[1] if len(parts) > 1 else "")
+    await message.answer(f"☑️ 주문 #{parts[0]}을 처리됨으로 바꾸고 손님에게 알렸습니다." if o
+                         else "실패·확인 필요 상태인 주문이 아닙니다.")
+
+
+@router.message(Command("energy_msg"))
+async def admin_msg(message: Message, command: CommandObject, cfg: BotConfig, energy: Desk, notifier: Notifier) -> None:
+    if message.from_user.id not in cfg.admin_ids:
+        return
+    parts = (command.args or "").split(maxsplit=1)
+    if len(parts) < 2 or not parts[0].isdigit():
+        await message.answer("사용법: <code>/energy_msg 주문번호 내용</code>")
+        return
+    o = await energy.get(int(parts[0]))
+    if not o:
+        await message.answer("주문을 찾을 수 없습니다.")
+        return
+    ok = await notifier.send(o["user_id"], E.admin_message(o, parts[1]), E.refund_kb(o["id"]))
+    await message.answer("📩 보냈습니다." if ok else "⚠️ 보내지 못했습니다(손님이 봇을 차단했을 수 있습니다).")

@@ -1,7 +1,7 @@
 import pytest
 
 from bot.energy import SCHEMA as ENERGY_SCHEMA
-from bot.energy import Desk
+from bot.energy import Desk, migrate
 from bot.handlers import router
 from bot.notify import Notifier
 from bot.prices import Prices
@@ -21,17 +21,28 @@ class Env:
     pass
 
 
+@pytest.fixture(autouse=True)
+def _fresh_memory():
+    """메모리에만 두는 상태(대화별 마지막 주소, 조회 횟수 제한)를 테스트마다 비운다."""
+    from bot.handlers import business, quick
+
+    business.RECENT.clear()
+    business._fail_notice.clear()
+    quick.LIMIT.clear()
+
+
 @pytest.fixture
 async def make_env(make_cfg, bot, tg):
     made = []
 
-    async def _make(channels=(), suppliers=None, pay=PAY, margin=0, max_loss=1_000_000):
+    async def _make(channels=(), suppliers=None, pay=PAY, margin=0, max_loss=1_000_000, support="", ttl=600):
         tron, market = FakeTron(), FakeMarket()
         tron.usdt_bal.update({SIM_OWNER: 10**12, SIM_HOLDER: 10**12})     # 모의 실행용 주소 (실제 체인과 같게)
         await tron.start()
         await market.start()
         cfg = make_cfg(channels=channels)
         db = await open_db(cfg.db_path, SCHEMA + ENERGY_SCHEMA)
+        await migrate(db)
         reader, prices = TronReader(tron.base, ""), Prices(market.base, market.base)
         notifier = Notifier(bot, db, cfg.admin_ids)
         watcher = Watcher(db, reader, prices, notifier, reconcile_seconds=1800)
@@ -40,7 +51,7 @@ async def make_env(make_cfg, bot, tg):
         else:
             for s in suppliers:
                 s.tron = tron
-        desk = Desk(db, reader, notifier, suppliers, pay, margin=margin, max_loss=max_loss)
+        desk = Desk(db, reader, notifier, suppliers, pay, margin=margin, max_loss=max_loss, support=support, ttl=ttl)
         scanner = Scanner(db, reader, watcher, desk)
         router._parent_router = None
         dp, _ = await assemble(cfg, bot, db, [router], Texts(TEXTS),

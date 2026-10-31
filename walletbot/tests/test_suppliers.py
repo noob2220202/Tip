@@ -20,9 +20,12 @@ async def serve(app):
 
 # ───────────── Netts ─────────────
 
+POOL = "TNp5gsJhBmZFXgCdgjMgr8pEZ8fHgXUHDq"     # 문서 예시: delegateAddress는 에너지를 보낸 풀 주소다
+
+
 class NettsFake:
     def __init__(self):
-        self.mode, self.keys, self.bodies, self.price = "ok", {}, [], 27
+        self.mode, self.keys, self.bodies, self.price, self.tiers, self.pricing_calls = "ok", {}, [], 27, None, 0
 
     def app(self):
         a = web.Application()
@@ -36,9 +39,12 @@ class NettsFake:
 
     async def pricing(self, req):
         assert self.auth(req) and req.query["services"] == "energy_1h"
+        self.pricing_calls += 1
+        if self.mode == "price_garbage":
+            return web.json_response({"success": True, "data": {"services": {"energy_1h": []}}})
         return web.json_response({"success": True, "data": {"services": {"energy_1h": {"unit": "sun", "periods": [
             {"id": "night", "is_current": False, "price": 20, "tiers": None},
-            {"id": "daytime", "is_current": True, "price": self.price, "tiers": None}]}}}})
+            {"id": "daytime", "is_current": True, "price": self.price, "tiers": self.tiers}]}}}})
 
     async def order(self, req):
         if not self.auth(req):
@@ -58,8 +64,8 @@ class NettsFake:
             return web.json_response({"code": 5003, "msg": "All energy providers are currently unavailable."}, status=503)
         if self.mode == "garbage":
             return web.Response(text="<html>bad gateway</html>", status=502)
-        data = {"orderId": "1H42", "paidTRX": 1.755, "hash": "dh1",
-                "delegateAddress": W2 if self.mode == "other" else body["receiveAddress"], "energy": body["amount"] + 50}
+        data = {"orderId": "1H42", "paidTRX": "abc" if self.mode == "badpaid" else 1.755, "hash": "dh1",
+                "delegateAddress": POOL, "energy": body["amount"] - 1000 if self.mode == "short" else body["amount"] + 50}
         if key in self.keys:
             return web.json_response({"detail": {"code": 10000, "msg": "ok", "data": self.keys[key]},
                                       "idempotency": {"cached": True}}, status=208)
@@ -83,8 +89,9 @@ async def netts():
 
 async def test_netts_price_order_and_idempotency(netts):
     fake, c = netts
-    assert await c.unit_price() == 27 and await c.cost(65_000) == 1_755_000
-    p = await c.order(W1, 65_000, "e7")
+    assert await c.cost(65_000) == 1_755_000 and await c.cost(131_000) == 3_537_000
+    assert fake.pricing_calls == 1                                           # 가격표는 한 번만 받아 양마다 계산한다
+    p = await c.order(W1, 65_000, "e7")                                      # 풀 주소가 와도 정상 성공
     assert (p.order_id, p.txid, p.cost) == ("1H42", "dh1", 1_755_000)
     assert fake.bodies[-1] == {"amount": 65_000, "receiveAddress": W1}
     again = await c.order(W1, 65_000, "e7")                                 # 같은 주문 번호 → 208, 새 주문 아님
@@ -96,7 +103,7 @@ async def test_netts_price_order_and_idempotency(netts):
 
 @pytest.mark.parametrize("mode,exc,low", [("low", Rejected, True), ("down", Rejected, False), ("busy", Uncertain, False),
                                           ("err", Uncertain, False), ("garbage", Uncertain, False),
-                                          ("other", Uncertain, False)])
+                                          ("short", Uncertain, False), ("badpaid", Uncertain, False)])
 async def test_netts_errors(netts, mode, exc, low):
     fake, c = netts
     fake.mode = mode
@@ -121,8 +128,22 @@ async def test_network_failure_is_uncertain_and_price_failure_is_supplier_error(
     with pytest.raises(Uncertain):
         await c.order(W1, 65_000, "e1")
     with pytest.raises(SupplierError):
-        await c.unit_price()
+        await c.cost(65_000)
+    with pytest.raises(SupplierError):
+        await c.balance()
     await c.close()
+
+
+async def test_netts_tiers_pick_the_order_size_and_odd_pricing_is_supplier_error(netts):
+    fake, c = netts
+    fake.tiers = [{"min_energy": 65_000, "max_energy": 130_999, "price": 30},
+                  {"min_energy": 131_000, "max_energy": 131_000, "price": 25}]
+    assert await c.cost(65_000) == 1_950_000 and await c.cost(131_000) == 3_275_000
+    other = Netts("nk", "1.2.3.4", c.base)
+    fake.mode = "price_garbage"
+    with pytest.raises(SupplierError):
+        await other.cost(65_000)
+    await other.close()
 
 
 # ───────────── CatFee ─────────────
@@ -149,9 +170,12 @@ class CatFeeFake:
             return web.json_response({"code": 101, "msg": "bad sign"})
         return web.json_response({"code": 0, "data": int(req.query["quantity"]) * 18})
 
+    def payload_sun(self, q):
+        return f"{int(q['quantity']) * 18}.0"                                   # 문자열·소수로 와도 읽는다
+
     def payload(self, q, status="PAYMENT_SUCCESS"):
         return {"id": "cf1", "client_order_id": q["client_order_id"], "receiver": q["receiver"], "status": status,
-                "confirm_status": "UNCONFIRMED", "pay_amount_sun": int(q["quantity"]) * 18, "delegate_hash": ""}
+                "confirm_status": "UNCONFIRMED", "pay_amount_sun": self.payload_sun(q), "delegate_hash": ""}
 
     async def order(self, req):
         self.paths.append(req.raw_path)
@@ -162,6 +186,8 @@ class CatFeeFake:
             return web.json_response({"code": 201, "msg": "Insufficient balance", "data": None})
         if self.mode == "param":
             return web.json_response({"code": 1, "msg": "Invalid parameter"})
+        if self.mode == "notproc":
+            return web.json_response({"code": 1003, "msg": "rental limits"})
         if self.mode == "status_low":
             return web.json_response({"code": 0, "data": self.payload(q, "INSUFFICIENT_BALANCE")})
         if self.mode == "unsure":
@@ -200,7 +226,7 @@ async def catfee():
 
 async def test_catfee_signature_query_order_and_idempotency(catfee):
     fake, c = catfee
-    assert await c.unit_price() == 18
+    assert await c.cost(65_000) == 1_170_000 and await c.cost(131_000) == 2_358_000
     p = await c.order(W1, 65_000, "e5")
     assert (p.order_id, p.cost) == ("cf1", 1_170_000)
     assert fake.paths[-1] == f"/v1/order?quantity=65000&receiver={W1}&duration=1h&client_order_id=e5&activate=false"
@@ -217,7 +243,9 @@ async def test_catfee_doc_signature_vector():
 
 @pytest.mark.parametrize("mode,lookup,exc,low", [
     ("low", "found", Rejected, True), ("param", "found", Rejected, False), ("status_low", "found", Rejected, True),
-    ("unsure", "missing", Rejected, False), ("unsure", "error", Uncertain, False)])
+    ("notproc", "missing", Rejected, False),        # 조건이 안 맞아 처리 안 함 + 조회해도 없음 → 거절
+    ("unsure", "missing", Uncertain, False),        # 114(결과 미확정)는 바로 조회해 없어도 불확실 (다른 곳으로 넘기지 않는다)
+    ("unsure", "error", Uncertain, False)])
 async def test_catfee_errors(catfee, mode, lookup, exc, low):
     fake, c = catfee
     fake.mode, fake.lookup = mode, lookup
@@ -238,7 +266,7 @@ async def test_catfee_unsure_but_order_exists_is_success(catfee):
 
 class TrxxFake:
     def __init__(self):
-        self.mode, self.bodies = "ok", []
+        self.mode, self.bodies, self.addition = "ok", [], 0
 
     def app(self):
         a = web.Application()
@@ -249,8 +277,10 @@ class TrxxFake:
 
     async def price(self, req):
         assert req.query["period"] == "1H"
-        return web.json_response({"energy_amount": req.query["energy_amount"], "period": "1H", "price": 15.9,
-                                  "total_price": int(int(req.query["energy_amount"]) * 15.9)})
+        n = int(req.query["energy_amount"])
+        addition = self.addition if n < 140_000 else 0
+        return web.json_response({"energy_amount": str(n), "period": "1H", "price": 15.9, "addition": addition,
+                                  "energy_fee": int(n * 15.9), "total_price": int(n * 15.9) + addition})
 
     async def order(self, req):
         raw = await req.text()
@@ -264,6 +294,8 @@ class TrxxFake:
             return web.json_response({"energy_amount": ["energy_amount must be >= 10000"]}, status=400)
         if self.mode == "err":
             return web.Response(text="oops", status=502)
+        if self.mode == "badamount":
+            return web.json_response({"errno": 0, "serial": "sx1", "amount": "?", "balance": 9_000_000})
         return web.json_response({"errno": 0, "serial": "sx1", "amount": 1_033_500, "balance": 9_000_000})
 
     async def index(self, req):
@@ -282,7 +314,10 @@ async def trxx():
 
 async def test_trxx_signed_compact_body_and_order(trxx):
     fake, c = trxx
-    assert await c.unit_price() == 15.9 and await c.cost(65_000) == 1_033_500
+    assert await c.cost(65_000) == 1_033_500 and await c.cost(131_000) == 2_082_900
+    fake.addition = 600_000
+    c._costs.clear()
+    assert await c.cost(65_000) == 1_633_500                                 # 소액 수수료(addition)까지 원가에 넣는다
     p = await c.order(W1, 65_000, "e2")
     assert (p.order_id, p.cost) == ("sx1", 1_033_500)
     assert fake.bodies[-1] == json.dumps({"energy_amount": 65_000, "out_trade_no": "e2", "period": "1H",
@@ -297,7 +332,8 @@ def test_trxx_doc_signature_vector():
     assert c.sign("1686796826", body) == "07c125cabfe006614a02131f927cca9e7a654f7644a817b155fad591e1c50f7b"
 
 
-@pytest.mark.parametrize("mode,exc,low", [("low", Rejected, True), ("bad", Rejected, False), ("err", Uncertain, False)])
+@pytest.mark.parametrize("mode,exc,low", [("low", Rejected, True), ("bad", Rejected, False), ("err", Uncertain, False),
+                                          ("badamount", Uncertain, False)])
 async def test_trxx_errors(trxx, mode, exc, low):
     fake, c = trxx
     fake.mode = mode

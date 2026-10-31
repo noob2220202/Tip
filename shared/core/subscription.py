@@ -91,7 +91,7 @@ class SubscriptionGate(BaseMiddleware):
                 out.append(ch)
         return out
 
-    def _keyboard(self, missing: list[Channel]) -> InlineKeyboardMarkup:
+    def keyboard(self, missing: list[Channel]) -> InlineKeyboardMarkup:
         rows = [[InlineKeyboardButton(text=ch.title or str(ch.chat_id), url=ch.url)] for ch in missing]
         rows.append([InlineKeyboardButton(text=self.texts.get("gate_button"), callback_data=CHECK_DATA)])
         return InlineKeyboardMarkup(inline_keyboard=rows)
@@ -142,7 +142,7 @@ class SubscriptionGate(BaseMiddleware):
             self._pending[user.id] = event
             await msg.answer(
                 self.texts.get("gate_intro", count=len(missing)),
-                reply_markup=self._keyboard(missing),
+                reply_markup=self.keyboard(missing),
             )
         elif cb:
             await cb.answer(self.texts.get("gate_missing", missing=", ".join(c.title or str(c.chat_id) for c in missing)), show_alert=True)
@@ -170,18 +170,20 @@ class SubscriptionGate(BaseMiddleware):
         if self.cfg.common.exempt_admins and owner in self.cfg.admin_ids:
             return await handler(event, data)
         now = time.monotonic()
-        if now - self._biz_blocked.get(owner, -1e9) < BIZ_BLOCK_TTL:
-            return None
-        missing = await self.missing(bot, owner)
-        if not missing:
-            self._biz_blocked.pop(owner, None)
-            return await handler(event, data)
-        self._biz_blocked[owner] = now
-        if now - self._biz_nudged.get(owner, -1e9) >= BIZ_NUDGE_EVERY:
+        if now - self._biz_blocked.get(owner, -1e9) >= BIZ_BLOCK_TTL:       # 미가입은 잠깐 기억해 매 메시지마다 묻지 않는다
+            if not await self.missing(bot, owner):
+                self._biz_blocked.pop(owner, None)
+                return await handler(event, data)
+            self._biz_blocked[owner] = now
+        # 주인이 직접 명령어를 쳤을 때만 안내한다(상대가 보내는 평범한 메시지마다 주인을 귀찮게 하지 않게)
+        typed = (msg.text or msg.caption or "").lstrip()
+        if msg.from_user and msg.from_user.id == owner and typed[:1] in ("/", "／") \
+                and now - self._biz_nudged.get(owner, -1e9) >= BIZ_NUDGE_EVERY:
             self._biz_nudged[owner] = now
+            missing = [ch for ch in self.cfg.common.channels if not self._cached_ok(owner, ch)]
             try:
-                await bot.send_message(conn.user_chat_id, self.texts.get("gate_intro", count=len(missing)),
-                                       reply_markup=self._keyboard(missing))
+                await bot.send_message(conn.user_chat_id, self.texts.get("gate_business", count=len(missing)),
+                                       reply_markup=self.keyboard(missing))
             except TelegramAPIError as e:
                 log.warning("비즈니스 주인 %s에게 가입 안내 실패: %s", owner, e)
         return None

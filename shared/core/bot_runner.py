@@ -112,6 +112,7 @@ async def assemble(
         gate = SubscriptionGate(cfg, db, texts)
         gate.dp = dp
         dp.update.outer_middleware(gate)
+        dp["gate"] = gate                  # 비즈니스 연결 안내처럼 핸들러가 직접 가입 여부를 볼 때 쓴다
 
     dp.include_router(admin.build_router(cfg.admin_ids))
     dp.include_router(flow.build_router(cfg.admin_ids))

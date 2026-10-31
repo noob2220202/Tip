@@ -281,8 +281,10 @@ async def test_gate_checks_business_owner_not_counterpart(make_cfg, bot, tg, db)
     tg.members[("@chan", 30)] = "member"                        # 상대만 가입
     await feed(dp, bot, biz_update(30, 30, "hi"))
     assert not [p for m, p in tg.sent if p.get("business_connection_id")]
-    assert any("가입했어요" in t for t in tg.texts_to(20))      # 안내는 주인에게 봇 대화로
-    assert not tg.texts_to(30)                                  # 상대에게는 아무것도 안 보낸다
+    assert not tg.texts_to(20) and not tg.texts_to(30)          # 상대의 평범한 메시지로는 아무에게도 안내하지 않는다
+    await feed(dp, bot, biz_update(20, 30, "/조회"))            # 주인이 직접 명령을 치면 주인에게만 봇 대화로 안내
+    assert len(tg.texts_to(20)) == 1 and "한 번 더" in tg.texts_to(20)[0]
+    assert not tg.texts_to(30)
     tg.members[("@chan", 20)] = "member"
     gate = next(m for m in dp.update.outer_middleware if isinstance(m, SubscriptionGate))
     gate._biz_blocked.clear()

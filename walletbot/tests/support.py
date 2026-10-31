@@ -51,6 +51,7 @@ class FakeTron:
         self.usdt_bal: dict[str, int] = {}      # USDT 잔액(컨트랙트 조회용)
         self.sim: dict[str, int] = {}           # 받는 주소별 모의 실행 에너지 (없으면 USDT 보유 여부로 정한다)
         self.sim_fail = False
+        self.const_error = False
         self.new_block([], ts=now_ms(0))
 
     async def start(self):
@@ -167,6 +168,8 @@ class FakeTron:
         body = await req.json()
         owner, sel, param = body["owner_address"], body["function_selector"], body["parameter"]
         target = hex_to_address("41" + param[24:64])
+        if sel == "balanceOf(address)" and self.const_error:
+            return web.json_response({"result": {"code": "OTHER_ERROR", "message": "CPU timeout"}})
         if sel == "balanceOf(address)":
             return web.json_response({"result": {"result": True}, "energy_used": 900,
                                       "constant_result": [f"{self.usdt_bal.get(target, 0):064x}"]})
@@ -265,10 +268,12 @@ class FakeSupplier(Supplier):
         self.bal = 100 * 1_000_000
         self.price_ttl = 0
 
-    async def _fetch_price(self):
+    async def _fetch_cost(self, energy):
         if self.mode == "price_fail":
             raise SupplierError("가격 없음")
-        return self.price
+        if self.mode == "price_crash":
+            raise AttributeError("이상한 가격 응답")
+        return int(self.price * energy)
 
     async def order(self, receiver, energy, ref):
         self.calls.append((receiver, energy, ref))
@@ -279,6 +284,8 @@ class FakeSupplier(Supplier):
             raise Rejected(f"{self.name} 잔고 부족", low_balance=True)
         if mode == "uncertain":
             raise Uncertain(f"{self.name} 시간 초과")
+        if mode == "crash":                         # 청구된 뒤 응답을 읽다가 예상하지 못한 오류
+            raise ValueError("이상한 응답")
         if ref in self.placed:                      # 같은 번호는 새 주문이 아니다 (공급처의 중복 방지 흉내)
             return self.placed[ref]
         p = Placed(f"{self.name}-{ref}", f"dtx-{ref}", int(self.price * energy))
@@ -287,5 +294,5 @@ class FakeSupplier(Supplier):
             self.tron.delegate(receiver, energy)
         return p
 
-    async def balance(self):
+    async def _fetch_balance(self):
         return self.bal

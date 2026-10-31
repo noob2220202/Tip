@@ -3,6 +3,7 @@
 공급처마다 응답 형식은 달라도 결과는 세 가지로 나눈다.
   성공(Placed) · 거절(Rejected: 주문이 만들어지지 않았다, 다른 공급처로 넘어가도 된다)
   불확실(Uncertain: 주문이 됐는지 알 수 없다. 다른 공급처로 넘기면 두 번 살 수 있다)
+'거절'은 청구가 없었다고 확신할 수 있을 때만 쓴다. 성공 응답을 읽다가 형식이 이상하면 이미 청구됐을 수 있으므로 '불확실'이다.
 불확실하면 같은 번호(ref)의 두 번째 요청을 새 주문으로 만들지 않는 공급처(idempotent)에만 다시 보낸다.
 그렇지 않은 공급처는 다시 보내지 않고 체인에서 에너지가 들어왔는지로 판단한다.
 """
@@ -11,7 +12,9 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import hmac
+import json
 import logging
+import math
 import time
 from dataclasses import dataclass
 from decimal import Decimal
@@ -60,7 +63,7 @@ class Supplier:
     def __init__(self, base: str) -> None:
         self.base = base.rstrip("/")
         self._session: aiohttp.ClientSession | None = None
-        self._price: tuple[float, float] | None = None     # (조회 시각, sun/에너지)
+        self._costs: dict[int, tuple[float, int]] = {}      # 에너지 양 -> (조회 시각, 원가 sun)
         self._lock = asyncio.Lock()
 
     def _http(self) -> aiohttp.ClientSession:
@@ -72,34 +75,44 @@ class Supplier:
         if self._session:
             await self._session.close()
 
-    async def unit_price(self, now: float | None = None) -> float:
-        """1시간 에너지 1당 가격(sun). 짧게 기억해 둔다."""
+    async def cost(self, energy: int, now: float | None = None) -> int:
+        """energy만큼 1시간 빌리는 원가(sun). 양마다 짧게 기억한다. 실패하면 SupplierError."""
         now = now or time.time()
         async with self._lock:
-            if self._price and now - self._price[0] < self.price_ttl:
-                return self._price[1]
-            price = await self._fetch_price()
-            if price <= 0:
-                raise SupplierError(f"{self.name} 가격이 올바르지 않아요: {price}")
-            self._price = (now, price)
-            return price
+            hit = self._costs.get(energy)
+            if hit and now - hit[0] < self.price_ttl:
+                return hit[1]
+            try:
+                total = await self._fetch_cost(energy)
+            except SupplierError:
+                raise
+            except Exception as e:  # noqa: BLE001 - 가격 조회는 부작용이 없으니 어떤 오류든 '가격 없음'으로 본다
+                raise SupplierError(f"{self.name} 가격 조회 실패: {e!r}") from None
+            if total <= 0:
+                raise SupplierError(f"{self.name} 가격이 올바르지 않아요: {total}")
+            self._costs[energy] = (now, total)
+            return total
 
-    async def cost(self, energy: int, now: float | None = None) -> int:
-        """energy만큼 1시간 빌리는 원가(sun)."""
-        return int(Decimal(str(await self.unit_price(now))) * energy + Decimal("0.999999"))
-
-    async def _fetch_price(self) -> float:
+    async def _fetch_cost(self, energy: int) -> int:
         raise NotImplementedError
 
     async def order(self, receiver: str, energy: int, ref: str) -> Placed:
         raise NotImplementedError
 
     async def balance(self) -> int:
-        """남은 잔고(sun)."""
+        """남은 잔고(sun). 실패하면 SupplierError."""
+        try:
+            return await self._fetch_balance()
+        except SupplierError:
+            raise
+        except Exception as e:  # noqa: BLE001 - 잔고 조회도 부작용이 없다
+            raise SupplierError(f"{self.name} 잔고 조회 실패: {e!r}") from None
+
+    async def _fetch_balance(self) -> int:
         raise NotImplementedError
 
-    async def _request(self, method: str, url: str, **kw) -> tuple[int, object]:
-        """(HTTP 코드, JSON). 네트워크 오류·시간 초과·JSON이 아닌 응답은 Uncertain."""
+    async def _request(self, method: str, url, **kw) -> tuple[int, object]:
+        """(HTTP 코드, JSON). 네트워크 오류·시간 초과는 Uncertain, JSON이 아닌 응답은 body=None."""
         try:
             async with self._http().request(method, url, **kw) as r:
                 try:
@@ -108,7 +121,12 @@ class Supplier:
                     body = None
                 return r.status, body
         except (aiohttp.ClientError, asyncio.TimeoutError) as e:
-            raise Uncertain(f"{self.name} 요청 실패: {e}") from e
+            raise Uncertain(f"{self.name} 요청 실패: {e!r}") from e
+
+
+def total_sun(unit: float, energy: int) -> int:
+    """sun/에너지 × 에너지를 올림해서 sun 총액으로."""
+    return math.ceil(Decimal(str(unit)) * energy)
 
 
 # ───────────── Netts ─────────────
@@ -118,7 +136,8 @@ class Netts(Supplier):
 
     주문: POST /order1h {amount, receiveAddress}. X-Idempotency-Key(64자 hex)를 주문마다 고정하면
     같은 키의 재요청은 208(이미 처리됨, 추가 청구 없음)이나 409(처리 중)를 준다.
-    가격: GET /pricing?services=energy_1h (분당 1회 제한 → 길게 기억한다).
+    응답의 delegateAddress는 에너지를 보낸 풀 주소라서 받는 주소와 다른 것이 정상이다.
+    가격: GET /pricing?services=energy_1h (분당 1회 제한 → 응답 전체를 길게 기억하고 양마다 구간 가격을 고른다).
     """
 
     name = "netts"
@@ -128,6 +147,7 @@ class Netts(Supplier):
     def __init__(self, api_key: str, real_ip: str, base: str = "https://netts.io/apiv2") -> None:
         super().__init__(base)
         self.api_key, self.real_ip = api_key, real_ip
+        self._period: tuple[float, dict] | None = None
 
     def _headers(self, key: str | None = None) -> dict:
         h = {"X-API-KEY": self.api_key, "X-Real-IP": self.real_ip}
@@ -138,24 +158,37 @@ class Netts(Supplier):
     def idem_key(self, receiver: str, energy: int, ref: str) -> str:
         return hmac.new(self.api_key.encode(), f"{receiver}:{energy}:{ref}".encode(), hashlib.sha256).hexdigest()
 
-    async def _fetch_price(self) -> float:
+    async def _current_period(self) -> dict:
+        now = time.time()
+        if self._period and now - self._period[0] < self.price_ttl:
+            return self._period[1]
         try:
             status, body = await self._request("GET", f"{self.base}/pricing", params={"services": "energy_1h"},
                                                headers=self._headers())
         except Uncertain as e:
             raise SupplierError(str(e)) from e
         try:
-            svc = body["data"]["services"]["energy_1h"]
-            period = next(p for p in svc["periods"] if p.get("is_current")) if svc.get("periods") else None
-            if period is None:
-                raise KeyError("periods")
-            price = period["price"]
-            for t in period.get("tiers") or []:          # 구간 가격이 있으면 65k가 들어가는 구간 값을 쓴다
-                if (t.get("min_energy") or 0) <= 65_000 <= (t.get("max_energy") or 10**12):
-                    price = t.get("price", price)
-            return float(price)
-        except (KeyError, TypeError, ValueError, StopIteration):
+            periods = body["data"]["services"]["energy_1h"]["periods"]
+            period = next(p for p in periods if isinstance(p, dict) and p.get("is_current"))
+            float(period["price"])
+        except Exception:  # noqa: BLE001 - 형식이 다르면 어떤 오류든 가격 없음
             raise SupplierError(f"netts 가격 응답을 읽지 못했어요 ({status})") from None
+        self._period = (now, period)
+        return period
+
+    @staticmethod
+    def price_for(period: dict, energy: int) -> float:
+        """구간 가격이 있으면 이 양이 들어가는 구간의 값, 없으면 기본 값(sun/에너지)."""
+        for t in period.get("tiers") or []:
+            if not isinstance(t, dict) or t.get("price") is None:
+                continue
+            hi = t.get("max_energy")
+            if (t.get("min_energy") or 0) <= energy <= (hi if hi is not None else 10**12):
+                return float(t["price"])
+        return float(period["price"])
+
+    async def _fetch_cost(self, energy: int) -> int:
+        return total_sun(self.price_for(await self._current_period(), energy), energy)
 
     async def order(self, receiver: str, energy: int, ref: str) -> Placed:
         status, body = await self._request("POST", f"{self.base}/order1h",
@@ -163,11 +196,16 @@ class Netts(Supplier):
                                            headers=self._headers(self.idem_key(receiver, energy, ref)))
         detail = body.get("detail") if isinstance(body, dict) else None
         if status in (200, 208) and isinstance(detail, dict) and detail.get("code") == 10000:
-            data = detail.get("data") or {}
-            if data.get("delegateAddress") not in (None, "", receiver):
-                raise Uncertain(f"netts가 다른 주소로 처리했다고 응답했어요: {data.get('delegateAddress')}")
-            return Placed(str(data.get("orderId") or ""), str(data.get("hash") or ""),
-                          trx_to_sun(data.get("paidTRX") or 0))
+            try:
+                data = detail.get("data") or {}
+                got = int(data.get("energy") or 0)
+                placed = Placed(str(data.get("orderId") or ""), str(data.get("hash") or ""),
+                                trx_to_sun(data.get("paidTRX") or 0))
+            except Exception as e:  # noqa: BLE001 - 청구된 뒤라서 형식이 이상하면 불확실
+                raise Uncertain(f"netts 성공 응답을 읽지 못했어요: {e!r}") from None
+            if got and got < energy:          # 같은 키의 다른 주문 응답이 돌아온 경우
+                raise Uncertain(f"netts 응답 에너지 {got}이 주문 {energy}보다 적어요")
+            return placed
         if status == 409:
             raise Uncertain("netts: 같은 주문을 처리하는 중")
         code = (body.get("code") if isinstance(body, dict) else None) or (detail.get("code") if isinstance(detail, dict) else None)
@@ -178,12 +216,9 @@ class Netts(Supplier):
             raise Rejected(f"netts 거절 {status}: {msg}")
         raise Uncertain(f"netts 응답 {status}: {msg}")
 
-    async def balance(self) -> int:
-        try:
-            status, body = await self._request("GET", f"{self.base}/userinfo", headers=self._headers())
-            return trx_to_sun(body["stats"]["balance"])
-        except (Uncertain, KeyError, TypeError, ValueError) as e:
-            raise SupplierError(f"netts 잔고 조회 실패: {e}") from None
+    async def _fetch_balance(self) -> int:
+        status, body = await self._request("GET", f"{self.base}/userinfo", headers=self._headers())
+        return trx_to_sun(body["stats"]["balance"])
 
 
 # ───────────── CatFee ─────────────
@@ -196,12 +231,14 @@ class CatFee(Supplier):
     주문: POST /v1/order?quantity&receiver&duration=1h&client_order_id&activate=false
       같은 client_order_id는 새 주문을 만들지 않고 처음 주문을 돌려준다.
       HTTP 200이어도 code가 0이 아니거나, code=0이어도 status가 실패 값이면 실패다.
+      114·111·113·203·999처럼 '결과를 아직 모른다'는 코드는 바로 조회해서 없더라도 불확실로 본다(문서: 곧바로 다시 사지 말 것).
     """
 
     name = "catfee"
     min_energy = 65_000
     OK_STATUS = ("PAYMENT_SUCCESS", "DELEGATE_SUCCESS")
-    PRE_CHECK = {1, 100, 101, 106, 107, 108}      # 요청을 검사하는 단계에서 막힌 것(서명·형식·한도)
+    PRE_CHECK = {1, 100, 101, 106, 107, 108}         # 요청을 검사하는 단계에서 막힌 것(서명·형식·한도) → 조회 없이 거절
+    NOT_PROCESSED = {110, 202, 1003, 1004, 1005, 1006}   # 상태·조건이 안 맞아 처리하지 않은 것 → 조회해서 없으면 거절
 
     def __init__(self, api_key: str, secret: str, base: str = "https://api.catfee.io") -> None:
         super().__init__(base)
@@ -240,20 +277,26 @@ class CatFee(Supplier):
         except (TypeError, ValueError):
             return None
 
-    async def _fetch_price(self) -> float:
+    async def _fetch_cost(self, energy: int) -> int:
         try:
-            body = await self._call("GET", "/v1/estimate", [("quantity", "65000"), ("duration", "1h")])
-            total = float(body["data"])
-        except (Uncertain, KeyError, TypeError, ValueError) as e:
-            raise SupplierError(f"catfee 가격 조회 실패: {e}") from None
+            body = await self._call("GET", "/v1/estimate", [("quantity", str(energy)), ("duration", "1h")])
+        except Uncertain as e:
+            raise SupplierError(str(e)) from None
         if self.code_of(body) != 0:
             raise SupplierError(f"catfee 가격 조회 실패: {body.get('msg')}")
-        return total / 65_000 if total > 10_000 else total     # 총액(sun)으로 오면 1당 가격으로 바꾼다
+        total = float(body["data"])
+        return total_sun(total, energy) if total < 10_000 else math.ceil(total)   # 1당 가격으로 오면 총액으로 바꾼다
 
     def _placed(self, data: dict, receiver: str) -> Placed:
-        if data.get("receiver") not in (None, "", receiver):
-            raise Uncertain(f"catfee가 다른 주소로 처리했다고 응답했어요: {data.get('receiver')}")
-        return Placed(str(data.get("id") or ""), str(data.get("delegate_hash") or ""), int(data.get("pay_amount_sun") or 0))
+        try:
+            if data.get("receiver") not in (None, "", receiver):
+                raise Uncertain(f"catfee가 다른 주소로 처리했다고 응답했어요: {data.get('receiver')}")
+            return Placed(str(data.get("id") or ""), str(data.get("delegate_hash") or ""),
+                          int(Decimal(str(data.get("pay_amount_sun") or 0))))
+        except Uncertain:
+            raise
+        except Exception as e:  # noqa: BLE001
+            raise Uncertain(f"catfee 성공 응답을 읽지 못했어요: {e!r}") from None
 
     def _judge(self, data: dict, receiver: str) -> Placed:
         st = str(data.get("status") or "")
@@ -281,18 +324,15 @@ class CatFee(Supplier):
         fcode = self.code_of(found)
         if fcode == 0 and isinstance(found.get("data"), dict):
             return self._judge(found["data"], receiver)
-        if fcode == 112 and ref in str(found.get("msg") or ""):
+        if code in self.NOT_PROCESSED and fcode == 112 and ref in str(found.get("msg") or ""):
             raise Rejected(f"catfee 거절 {code}: {body.get('msg')}")
         raise Uncertain(f"catfee 응답 {code}: {body.get('msg')}")
 
-    async def balance(self) -> int:
-        try:
-            body = await self._call("GET", "/v1/account")
-            if self.code_of(body) != 0:
-                raise ValueError(body.get("msg"))
-            return int(body["data"]["balance"])
-        except (Uncertain, KeyError, TypeError, ValueError) as e:
-            raise SupplierError(f"catfee 잔고 조회 실패: {e}") from None
+    async def _fetch_balance(self) -> int:
+        body = await self._call("GET", "/v1/account")
+        if self.code_of(body) != 0:
+            raise SupplierError(f"catfee 잔고 조회 실패: {body.get('msg')}")
+        return int(Decimal(str(body["data"]["balance"])))
 
 
 # ───────────── trxx (itrx와 같은 서버) ─────────────
@@ -303,7 +343,7 @@ class Trxx(Supplier):
     서명한 JSON 문자열을 그대로 본문으로 보낸다(json= 을 쓰면 공백이 들어가 서명이 깨진다).
     주문: POST /api/v1/frontend/order {energy_amount, period: "1H", receive_address, out_trade_no}
       errno=0이고 serial이 있으면 접수(이미 청구됨). 같은 번호의 중복 방지는 문서에 없다 → 불확실하면 다시 보내지 않는다.
-    가격: GET /api/v1/frontend/order/price?energy_amount=65000&period=1H → price(sun/에너지)
+    가격: GET /api/v1/frontend/order/price?energy_amount=N&period=1H → total_price(sun, 소액 수수료 포함)
     잔고: GET /api/v1/frontend/index-data → balance(sun)
     """
 
@@ -321,32 +361,32 @@ class Trxx(Supplier):
     def _headers(self) -> dict:
         return {"API-KEY": self.api_key, "Accept-Language": "en"}
 
-    async def _fetch_price(self) -> float:
+    async def _fetch_cost(self, energy: int) -> int:
         try:
             status, body = await self._request("GET", f"{self.base}/api/v1/frontend/order/price",
-                                               params={"energy_amount": "65000", "period": "1H"}, headers=self._headers())
-            return float(body["price"])
-        except (Uncertain, KeyError, TypeError, ValueError) as e:
-            raise SupplierError(f"trxx 가격 조회 실패: {e}") from None
+                                               params={"energy_amount": str(energy), "period": "1H"},
+                                               headers=self._headers())
+        except Uncertain as e:
+            raise SupplierError(str(e)) from None
+        by_unit = total_sun(body["price"], energy) + int(body.get("addition") or 0)
+        return max(int(body.get("total_price") or 0), by_unit)     # 소액 수수료(addition)가 빠지지 않게
 
     async def order(self, receiver: str, energy: int, ref: str) -> Placed:
-        import json
-
         body = json.dumps({"energy_amount": energy, "out_trade_no": ref, "period": "1H", "receive_address": receiver},
                           sort_keys=True, separators=(",", ":"))
         ts = str(int(time.time()))
         headers = {**self._headers(), "TIMESTAMP": ts, "SIGNATURE": self.sign(ts, body), "Content-Type": "application/json"}
         status, out = await self._request("POST", f"{self.base}/api/v1/frontend/order", data=body, headers=headers)
         if status == 200 and isinstance(out, dict) and out.get("errno") == 0 and out.get("serial"):
-            return Placed(str(out["serial"]), "", int(out.get("amount") or 0))
-        msg = str((out or {}).get("message") or (out or {}).get("detail") or out)[:200] if isinstance(out, dict) else str(out)[:200]
+            try:
+                return Placed(str(out["serial"]), "", int(Decimal(str(out.get("amount") or 0))))
+            except Exception as e:  # noqa: BLE001 - 접수된 뒤라서 형식이 이상하면 불확실
+                raise Uncertain(f"trxx 성공 응답을 읽지 못했어요: {e!r}") from None
+        msg = str(out.get("message") or out.get("detail") or out)[:200] if isinstance(out, dict) else str(out)[:200]
         if status in (400, 401, 403, 404, 405) or (status == 200 and isinstance(out, dict) and out.get("errno") not in (0, None)):
             raise Rejected(f"trxx 거절 {status}: {msg}", low_balance="insufficient" in msg.lower() or "余额" in msg)
         raise Uncertain(f"trxx 응답 {status}: {msg}")
 
-    async def balance(self) -> int:
-        try:
-            status, body = await self._request("GET", f"{self.base}/api/v1/frontend/index-data", headers=self._headers())
-            return int(body["balance"])
-        except (Uncertain, KeyError, TypeError, ValueError) as e:
-            raise SupplierError(f"trxx 잔고 조회 실패: {e}") from None
+    async def _fetch_balance(self) -> int:
+        status, body = await self._request("GET", f"{self.base}/api/v1/frontend/index-data", headers=self._headers())
+        return int(body["balance"])

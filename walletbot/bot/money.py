@@ -35,25 +35,49 @@ def won(micro: int, price: float) -> int:
 
 _UNITS = {"원": "KRW", "krw": "KRW", "₩": "KRW", "usdt": "USDT", "테더": "USDT", "trx": "TRX", "트론": "TRX",
           "달러": "USD", "usd": "USD", "$": "USD", "불": "USD"}
-_SCALE = {"천": 10**3, "만": 10**4, "억": 10**8}
-_AMOUNT = re.compile(r"^([$₩]?)([0-9]+(?:\.[0-9]+)?)(천|만|억)?(원|krw|₩|usdt|테더|trx|트론|달러|usd|\$|불)?$")
+_SMALL = {"십": 10, "백": 100, "천": 1000}
+_BIG = {"만": 10**4, "억": 10**8, "조": 10**12}
+_AMOUNT = re.compile(r"^([$₩]?)((?:[0-9]+(?:\.[0-9]+)?|[십백천만억조])+)(원|krw|₩|usdt|테더|trx|트론|달러|usd|\$|불)?$")
+_TOKEN = re.compile(r"[0-9]+(?:\.[0-9]+)?|[십백천만억조]")
 AMOUNT_MAX = Decimal(10) ** 13
 
 
-def parse_amount(text: str) -> tuple[Decimal, str] | None:
-    """'100' → (100, USDT), '10만원'·'100000원' → (100000, KRW), '50trx' → (50, TRX), '$20' → (20, USD).
+def _korean_number(body: str) -> tuple[Decimal, bool] | None:
+    """'1억5천만' → 150000000, '3만5천' → 35000, '1.5만' → 15000, '100' → 100. (값, 한글 단위를 썼는지)"""
+    total, group, num, scaled = Decimal(0), Decimal(0), None, False
+    for tok in _TOKEN.findall(body):
+        if tok in _SMALL:
+            group += (num if num is not None else 1) * _SMALL[tok]
+            num, scaled = None, True
+        elif tok in _BIG:
+            group += num if num is not None else 0
+            total += (group or 1) * _BIG[tok]
+            group, num, scaled = Decimal(0), None, True
+        else:
+            if num is not None:            # 숫자가 단위 없이 두 번 이어질 수는 없다
+                return None
+            num = Decimal(tok)
+    return total + group + (num if num is not None else 0), scaled
 
-    단위가 없으면 USDT로 본다. 만·억처럼 큰 수 단위만 붙으면 원으로 본다. 해석할 수 없으면 None.
+
+def parse_amount(text: str) -> tuple[Decimal, str] | None:
+    """'100' → (100, USDT), '10만원'·'100000원' → (100000, KRW), '1억5천만' → (150000000, KRW),
+    '50trx' → (50, TRX), '$20' → (20, USD).
+
+    단위가 없으면 USDT로 본다. 만·억처럼 한글 수 단위만 붙으면 원으로 본다. 해석할 수 없으면 None.
     """
     s = text.strip().lower().replace(",", "").replace(" ", "")
     m = _AMOUNT.match(s)
     if not m:
         return None
-    prefix, num, scale, unit = m.groups()
-    value = Decimal(num) * _SCALE.get(scale or "", 1)
+    prefix, body, unit = m.groups()
+    parsed = _korean_number(body)
+    if parsed is None:
+        return None
+    value, scaled = parsed
     if prefix and unit and _UNITS[prefix] != _UNITS[unit]:
         return None
-    name = _UNITS.get(unit or prefix or "", "KRW" if scale else "USDT")
+    name = _UNITS.get(unit or prefix or "", "KRW" if scaled else "USDT")
     if value <= 0 or value > AMOUNT_MAX:
         return None
     return value, name

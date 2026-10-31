@@ -35,11 +35,21 @@ def won(sun: int, trx_krw: float | None) -> str:
     return f" (≈ {money.won(sun, trx_krw):,}원)" if trx_krw else ""
 
 
+def contact(support: str) -> str:
+    """문의처. 설정이 없으면 채널 공지를 가리킨다."""
+    return f"<b>{esc(support)}</b>" if support else "<b>관리자</b>(채널 공지의 문의처)"
+
+
+def user_tag(user_id: int, username: str | None) -> str:
+    name = f" @{esc(username)}" if username else ""
+    return f"<a href=\"tg://user?id={user_id}\">{user_id}</a>{name}"
+
+
 # ───────────── 버튼 ─────────────
 
 def intro_kb(enabled: bool) -> Kb:
     rows = [[Btn(text="⚡ 에너지 사기", callback_data="en:buy")]] if enabled else []
-    rows += [[Btn(text="📖 처음이신가요?", callback_data="en:guide"), Btn(text="❓ 자주 묻는 질문", callback_data="en:faq")],
+    rows += [[Btn(text="📖 처음이십니까?", callback_data="en:guide"), Btn(text="❓ 자주 묻는 질문", callback_data="en:faq")],
              [Btn(text="📋 내 주문", callback_data="en:list"), Btn(text="⬅️ 메뉴", callback_data="menu")]]
     return Kb(inline_keyboard=rows)
 
@@ -71,6 +81,10 @@ def order_kb(order_id: int) -> Kb:
                                 Btn(text="❌ 주문 취소", callback_data=f"en:x:{order_id}")]])
 
 
+def refund_kb(order_id: int) -> Kb:
+    return Kb(inline_keyboard=[[Btn(text="💸 환불받을 주소 보내기", callback_data=f"en:rf:{order_id}")]])
+
+
 def status_kb(order_id: int) -> Kb:
     return Kb(inline_keyboard=[[Btn(text="🔄 상태 확인", callback_data=f"en:o:{order_id}"),
                                 Btn(text="⬅️ 에너지 임대", callback_data="en")]])
@@ -100,50 +114,58 @@ def intro(prices: dict[bool, tuple[int, int]] | None, trx_krw: float | None, mar
         save = max(0, round((1 - ours / burn) * 100)) if burn else 0
         lines.append(f"{label}\n   ⚡ <b>{trx(ours)} TRX</b>{won(ours, trx_krw)}\n"
                      f"   🔥 그냥 보내면 {trx2(burn)} TRX{won(burn, trx_krw)} → <b>{save}% 절약</b>")
-    promo = "\n\n🎁 지금은 <b>원가 그대로</b>(수수료 0) 드리는 홍보 기간입니다." if margin == 0 else ""
+    promo = ("\n\n🎁 지금은 <b>공급처 원가 그대로</b> 드리는 홍보 기간입니다. "
+             "(주문을 구분하는 금액 끝자리만 0.001 TRX 단위로 조금 다를 수 있습니다)") if margin == 0 else ""
     return (head + "\n\n💸 <b>지금 가격</b> (USDT 1번 보내는 데 필요한 양)\n<blockquote>" + "\n\n".join(lines)
-            + "</blockquote>" + promo + "\n\n처음이시면 <b>📖 처음이신가요?</b>부터 읽어 주십시오. 👇")
+            + "</blockquote>" + promo + "\n\n처음이시면 <b>📖 처음이십니까?</b>부터 읽어 주십시오. 👇")
 
 
-GUIDE = (
-    "📖 <b>처음 쓰시는 분을 위한 안내</b>\n\n"
-    "<blockquote>1️⃣ <b>⚡ 에너지 사기</b>를 누르고 <b>USDT를 보낼 내 지갑 주소</b>를 보냅니다.\n"
-    "     에너지는 <b>보내는 지갑</b>에 있어야 합니다. 받는 사람 지갑이 아닙니다.\n\n"
-    "2️⃣ <b>받는 사람 주소</b>를 보내 주시면 필요한 양을 정확히 계산해 드립니다.\n"
-    "     받는 주소에 USDT가 한 번도 없었다면 에너지가 <b>두 배</b> 필요합니다.\n\n"
-    "3️⃣ 안내된 <b>TRX 금액을 소수점까지 정확히</b> 보냅니다. (주문마다 끝자리가 다릅니다)\n"
-    "     내 지갑에서 보내도 되고, 거래소에서 출금해도 됩니다.\n\n"
-    "4️⃣ 몇 초 뒤 <b>✅ 에너지 도착</b> 메시지가 오면 그때 <b>USDT를 보내십시오.</b>\n\n"
-    "5️⃣ 에너지는 <b>1시간 동안</b>만 쓸 수 있습니다. 도착하면 바로 보내십시오.</blockquote>\n\n"
-    "💡 <b>꼭 알아 두십시오</b>\n"
-    "<blockquote>• 지갑에 <b>TRX가 0.5개 이상</b> 남아 있어야 합니다. USDT를 보낼 때 <b>대역폭 수수료</b>(최대 약 0.35 TRX)가 "
-    "따로 나올 수 있습니다.\n"
-    "• 처음 만든 지갑은 TRX를 한 번이라도 받아야 <b>활성화</b>됩니다. 활성화되지 않은 지갑에는 에너지를 보낼 수 없습니다.\n"
-    "• 저희는 <b>개인키·시드·승인(Approve)</b>을 절대 요구하지 않습니다. 요구하는 곳은 사기입니다.</blockquote>"
-)
+def guide(late_minutes: int) -> str:
+    return (
+        "📖 <b>처음 쓰시는 분을 위한 안내</b>\n\n"
+        "<blockquote>1️⃣ <b>⚡ 에너지 사기</b>를 누르고 <b>USDT를 보낼 내 지갑 주소</b>를 보냅니다.\n"
+        "     에너지는 <b>보내는 지갑</b>에 있어야 합니다. 받는 사람 지갑이 아닙니다.\n\n"
+        "2️⃣ <b>받는 사람 주소</b>를 보내 주시면 필요한 양을 정확히 계산해 드립니다.\n"
+        "     받는 주소의 USDT 잔액이 <b>지금 0</b>이면(예전에 있었더라도) 에너지가 약 <b>두 배</b> 필요합니다.\n"
+        "     잘 모르시면 주소를 보내 주시거나 <b>없음·모름</b>을 고르십시오.\n\n"
+        "3️⃣ 안내된 <b>TRX 금액을 소수점까지 정확히</b> 보냅니다. (주문마다 끝자리가 다릅니다)\n"
+        "     가능하면 <b>USDT를 보낼 그 지갑</b>에서 보내 주십시오. 거래소에서 출금하셔도 되지만 "
+        f"<b>도착 금액</b>이 정확히 같아야 하고, 기한이 지나고 {late_minutes}분 넘게 늦으면 자동으로 처리되지 않습니다.\n\n"
+        "4️⃣ 몇 초 뒤 <b>✅ 에너지 도착</b> 메시지가 오면 그때 <b>USDT를 보내십시오.</b>\n\n"
+        "5️⃣ 에너지는 <b>1시간 동안</b>만 쓸 수 있습니다. 도착하면 바로 보내십시오.</blockquote>\n\n"
+        "💡 <b>꼭 알아 두십시오</b>\n"
+        "<blockquote>• 지갑에 <b>TRX가 0.5개 이상</b> 남아 있어야 합니다. USDT를 보낼 때 <b>대역폭 수수료</b>(최대 약 0.35 TRX)가 "
+        "따로 나올 수 있습니다.\n"
+        "• 처음 만든 지갑은 TRX를 한 번이라도 받아야 <b>활성화</b>됩니다. 활성화되지 않은 지갑에는 에너지를 보낼 수 없습니다.\n"
+        "• 저희는 <b>개인키·시드·승인(Approve)</b>을 절대 요구하지 않습니다. 요구하는 곳은 사기입니다.</blockquote>"
+    )
 
-FAQ = (
-    "❓ <b>자주 묻는 질문</b>\n\n"
-    "<blockquote expandable><b>Q. 에너지가 뭔가요?</b>\n"
-    "TRON에서 USDT를 보낼 때 쓰는 연료입니다. 없으면 같은 양만큼 TRX가 타서 없어집니다.\n\n"
-    "<b>Q. 왜 받는 주소에 따라 가격이 다른가요?</b>\n"
-    "받는 주소에 USDT가 없으면 TRON 수수료 규칙상 에너지가 약 두 배(13만) 듭니다. "
-    "모르면 <b>없음</b>을 고르시면 안전합니다.\n\n"
-    "<b>Q. 거래소에서 보내도 되나요?</b>\n"
-    "됩니다. 에너지는 주문할 때 입력한 지갑으로 갑니다. 다만 <b>도착 금액이 주문 금액과 정확히 같아야</b> 하니, "
-    "출금 수수료를 뺀 금액이 아니라 <b>받는 금액</b>을 주문 금액으로 맞춰 주십시오.\n\n"
-    "<b>Q. 금액을 잘못 보냈습니다.</b>\n"
-    "자동으로 처리되지 않습니다. 관리자가 확인한 뒤 연락드립니다. TRX가 아닌 USDT를 보낸 경우도 같습니다.\n\n"
-    "<b>Q. 주문 시간(10분)이 지난 뒤에 보냈습니다.</b>\n"
-    "만료 후 30분 안에 <b>정확한 금액</b>이 도착하면 그대로 처리해 드립니다.\n\n"
-    "<b>Q. 에너지가 도착했는데도 TRX가 조금 빠졌습니다.</b>\n"
-    "에너지와 별개인 <b>대역폭 수수료</b>(최대 약 0.35 TRX)입니다. 하루 무료 대역폭은 USDT 한 번 보내기에도 빠듯합니다.\n\n"
-    "<b>Q. 남은 에너지는 환불되나요?</b>\n"
-    "1시간이 지나면 회수되며 환불되지 않습니다. USDT를 보낼 때마다 그때그때 빌려 주십시오.\n\n"
-    "<b>Q. 에너지가 들어왔는지 어떻게 보나요?</b>\n"
-    "도착 메시지에 남은 에너지를 적어 드립니다. TronLink 같은 지갑의 <b>자원(에너지)</b> 화면이나 "
-    "<b>/조회</b> <code>내주소</code>로도 확인하실 수 있습니다.</blockquote>"
-)
+
+def faq(minutes: int, late_minutes: int, support: str) -> str:
+    return (
+        "❓ <b>자주 묻는 질문</b>\n\n"
+        "<blockquote expandable><b>Q. 에너지란 무엇입니까?</b>\n"
+        "TRON에서 USDT를 보낼 때 쓰는 연료입니다. 없으면 같은 양만큼 TRX가 타서 없어집니다.\n\n"
+        "<b>Q. 왜 받는 주소에 따라 가격이 다릅니까?</b>\n"
+        "받는 주소의 USDT 잔액이 지금 0이면 TRON 수수료 규칙상 에너지가 약 두 배(13만) 듭니다. "
+        "모르시면 <b>없음·모름</b>을 고르시면 안전합니다.\n\n"
+        "<b>Q. 거래소에서 보내도 됩니까?</b>\n"
+        "됩니다. 에너지는 주문할 때 입력한 지갑으로 갑니다. 다만 <b>도착하는 금액</b>이 주문 금액과 정확히 같아야 합니다. "
+        "출금 수수료가 보내는 금액에서 빠지는 거래소라면 그만큼 더해서 출금해 주십시오. "
+        "출금이 늦어질 수 있으니 가능하면 개인 지갑에서 보내 주십시오.\n\n"
+        "<b>Q. 금액을 잘못 보냈습니다.</b>\n"
+        "자동으로 처리되지 않습니다. 주문한 지갑에서 보내셨다면 봇이 알려 드리고 <b>💸 환불받을 주소 보내기</b> 버튼이 나옵니다. "
+        f"다른 지갑·거래소에서 보내셨다면 {contact(support)}에게 <b>주문 번호와 거래 해시(TXID)</b>를 보내 주십시오.\n\n"
+        f"<b>Q. 주문 시간({minutes}분)이 지난 뒤에 보냈습니다.</b>\n"
+        f"만료 후 {late_minutes}분 안에 <b>정확한 금액</b>이 도착하면 그대로 처리해 드립니다.\n\n"
+        "<b>Q. 에너지가 도착했는데도 TRX가 조금 빠졌습니다.</b>\n"
+        "에너지와 별개인 <b>대역폭 수수료</b>(최대 약 0.35 TRX)입니다. 하루 무료 대역폭은 USDT 한 번 보내기에도 빠듯합니다.\n\n"
+        "<b>Q. 남은 에너지는 환불됩니까?</b>\n"
+        "1시간이 지나면 회수되며 환불되지 않습니다. USDT를 보낼 때마다 그때그때 빌려 주십시오.\n\n"
+        "<b>Q. 에너지가 들어왔는지 어떻게 확인합니까?</b>\n"
+        "도착 메시지에 남은 에너지를 적어 드립니다. TronLink 같은 지갑의 <b>자원(에너지)</b> 화면이나 "
+        "<b>/조회</b> <code>내주소</code>로도 확인하실 수 있습니다.</blockquote>"
+    )
 
 
 # ───────────── 주문 단계 ─────────────
@@ -192,25 +214,28 @@ def quote_text(receiver: str, recipient: str | None, has_usdt: bool | None, need
     save = max(0, round((1 - price / burn) * 100)) if burn else 0
     bw = ("\n💡 지금 무료 대역폭이 부족해 USDT를 보낼 때 <b>대역폭 수수료</b>(약 0.35 TRX)가 따로 나올 수 있습니다. "
           "지갑에 TRX를 0.5개 이상 남겨 두십시오.") if bandwidth < 700 else ""
-    promo = " · 🎁 원가 그대로" if margin == 0 else ""
+    promo = " · 🎁 공급처 원가 그대로" if margin == 0 else ""
     return ("⚡ <b>3단계 · 주문 확인</b>\n\n"
             f"<blockquote>💼 에너지 받을 지갑 <code>{esc(receiver)}</code>\n{to}\n"
             f"🔋 필요한 에너지 {need:,} → <b>{energy:,}</b> 임대 (1시간)\n"
             f"💰 가격 <b>{trx(price)} TRX</b>{won(price, trx_krw)}{promo}\n"
             f"🔥 그냥 보내면 {trx2(burn)} TRX{won(burn, trx_krw)} → <b>{save}% 절약</b></blockquote>{bw}\n\n"
-            "맞으면 <b>✅ 주문하기</b>를 눌러 주십시오. 다음 화면에서 보낼 금액을 알려 드립니다.")
+            "맞으면 <b>✅ 주문하기</b>를 눌러 주십시오. 다음 화면에서 보낼 금액을 알려 드립니다.\n"
+            "※ 주문을 구분하려고 보낼 금액 끝자리에 0.001~0.099 TRX가 더해질 수 있습니다.")
 
 
-def order_created(o, pay_address: str, minutes: int) -> str:
+def order_created(o, pay_address: str, minutes: int, inline: bool = False) -> str:
+    where = f"<code>{esc(pay_address)}</code>" if inline else "(다음 메시지를 눌러 복사)"
     return ("🧾 <b>주문 #{id} · 4단계 · 입금</b>\n\n"
             "아래 주소로 <b>정확히 이 금액</b>의 <b>TRX</b>를 보내 주십시오.\n\n"
             "<blockquote>💰 보낼 금액 <code>{amount}</code> <b>TRX</b>\n"
-            "📥 받는 주소 (다음 메시지를 눌러 복사)\n"
+            "📥 받는 주소 {where}\n"
             "⏰ <u>{minutes}분 이내</u></blockquote>\n\n"
             "⚠️ <b>소수점까지 정확히</b> 보내야 자동으로 처리됩니다. 금액이 다르면 처리되지 않습니다.\n"
             "⚠️ <b>TRX</b>만 보내 주십시오. USDT를 보내면 처리되지 않습니다.\n"
+            "💡 가능하면 USDT를 보낼 그 지갑에서 보내 주십시오. 거래소 출금은 <b>도착 금액</b>이 같아야 합니다.\n"
             "⚡ 입금이 블록에 들어가면 몇 초 안에 에너지를 보내 드립니다.").format(
-        id=o["id"], amount=plain(o["amount"]), minutes=minutes)
+        id=o["id"], amount=plain(o["amount"]), minutes=minutes, where=where)
 
 
 def pay_address_msg(pay_address: str) -> str:
@@ -224,7 +249,10 @@ STATUS = {
 }
 
 
-def order_status(o) -> str:
+def order_status(o, pay_address: str = "", now: float = 0.0) -> str:
+    if o["status"] == "awaiting":           # 결제 안내를 지우지 않도록 금액·기한을 그대로 다시 보여 준다
+        left = max(1, int((o["expires_at"] - now) // 60)) if now else 1
+        return order_created(o, pay_address, left, inline=True)
     lines = [f"🧾 <b>주문 #{o['id']}</b> — {STATUS.get(o['status'], o['status'])}\n",
              f"<blockquote>💼 <code>{esc(o['receiver'])}</code>",
              f"🔋 {o['energy']:,} 에너지 · 💰 {trx(o['amount'])} TRX"]
@@ -232,6 +260,8 @@ def order_status(o) -> str:
         lines.append(f"🔗 <a href=\"{SCAN_TX.format(o['txid'])}\">입금 거래</a>")
     if o["delegate_tx"]:
         lines.append(f"🔗 <a href=\"{SCAN_TX.format(o['delegate_tx'])}\">에너지 위임 거래</a>")
+    if o["refund_to"]:
+        lines.append(f"💸 환불 주소 <code>{esc(o['refund_to'])}</code>")
     return "\n".join(lines) + "</blockquote>"
 
 
@@ -263,7 +293,8 @@ def done(o, energy: int) -> str:
 def mismatch(o, value: int) -> str:
     return (f"⚠️ <b>주문 #{o['id']}</b> 금액이 다릅니다.\n\n"
             f"<blockquote>주문 금액 <b>{trx(o['amount'])} TRX</b> · 도착 금액 <b>{trx(value)} TRX</b></blockquote>\n"
-            "자동으로 처리할 수 없어서 관리자에게 전달했습니다. 확인 후 처리해 드리겠습니다.")
+            "자동으로 처리할 수 없어서 관리자에게 전달했습니다.\n"
+            "아래 버튼으로 <b>환불받을 본인 지갑 주소</b>를 보내 주시면 관리자가 확인 후 환불해 드립니다.")
 
 
 def expired(o, late_minutes: int) -> str:
@@ -272,44 +303,88 @@ def expired(o, late_minutes: int) -> str:
             "아직 안 보내셨다면 <b>보내지 마시고</b> 새로 주문해 주십시오. (가격이 바뀌었을 수 있습니다)</blockquote>")
 
 
-def failed(o) -> str:
+def failed(o, support: str = "") -> str:
     return (f"⚠️ <b>주문 #{o['id']}</b> 에너지를 보내지 못했습니다.\n"
             "<blockquote>공급처가 모두 응답하지 않습니다. 관리자가 확인 후 <b>환불</b>해 드리겠습니다.\n"
+            "아래 버튼으로 <b>환불받을 본인 지갑 주소</b>를 보내 주십시오. (거래소에서 보내셨다면 거래소 주소가 아닌 "
+            f"<b>개인 지갑 주소</b>로 받으셔야 합니다. 문의: {contact(support)})\n"
             "⚠️ <b>USDT는 아직 보내지 마십시오.</b> 지금 보내면 수수료로 TRX가 탑니다.</blockquote>")
 
 
 def review(o) -> str:
     return (f"🔍 <b>주문 #{o['id']}</b> 처리 결과를 확인하고 있습니다.\n"
-            "<blockquote>공급처 응답이 늦어 관리자가 직접 확인합니다.\n"
+            "<blockquote>공급처 응답이 늦어지고 있습니다. 1시간 안에 에너지가 들어오면 <b>바로 알려 드리고</b>, "
+            "그렇지 않으면 관리자가 확인한 결과를 이 대화로 알려 드립니다.\n"
             "⚠️ <b>✅ 에너지 도착</b> 메시지를 받기 전에는 USDT를 보내지 마십시오.</blockquote>")
 
 
 def slow(o) -> str:
     return (f"🔍 <b>주문 #{o['id']}</b> 에너지 도착이 늦어지고 있습니다.\n"
-            "<blockquote>관리자가 확인하고 있습니다. <b>/조회</b>로 에너지가 들어왔는지 보신 뒤 보내 주십시오.\n"
+            "<blockquote>1시간 안에 에너지가 들어오면 바로 알려 드리고, 그렇지 않으면 관리자가 확인한 결과를 알려 드립니다.\n"
+            f"직접 보시려면 <b>/조회</b> <code>{esc(o['receiver'])}</code>\n"
             "⚠️ 에너지가 보이지 않으면 USDT를 보내지 마십시오.</blockquote>")
+
+
+def resolved(o, note: str) -> str:
+    memo = f"\n<blockquote>{esc(note)}</blockquote>" if note else ""
+    return f"☑️ <b>주문 #{o['id']}</b> 관리자 확인이 끝났습니다.{memo}"
+
+
+ASK_REFUND = ("💸 <b>환불받을 주소</b>\n\n환불받으실 <b>본인 TRON 지갑 주소</b>(<code>T</code>로 시작)를 보내 주십시오.\n"
+              "<blockquote>⚠️ 거래소 입금 주소는 메모 없이 받으면 돈을 찾지 못할 수 있습니다. 개인 지갑 주소를 보내 주십시오.</blockquote>\n"
+              "취소는 /cancel")
+REFUND_NOT_ALLOWED = "이 주문은 환불 주소를 받을 수 없는 상태입니다."
+STALE = "이 단계는 끝났습니다. ⚡ 에너지 사기를 다시 눌러 주십시오."
+
+
+def refund_saved(o) -> str:
+    return (f"✅ <b>주문 #{o['id']}</b> 환불 주소를 받았습니다.\n<blockquote><code>{esc(o['refund_to'])}</code></blockquote>\n"
+            "관리자가 확인 후 환불하고 이 대화로 알려 드립니다.")
+
+
+def admin_message(o, text: str) -> str:
+    return f"📩 <b>관리자 메시지</b> — 주문 #{o['id']}\n\n<blockquote>{esc(text)}</blockquote>"
 
 
 # ───────────── 관리자 ─────────────
 
-def admin_unknown(d: Deposit, why: str) -> str:
+def admin_unknown(d: Deposit, why: str, o=None, username: str | None = None) -> str:
+    who = f"\n손님 {user_tag(o['user_id'], username)} · 주문 금액 {trx(o['amount'])} TRX" if o is not None else ""
     return (f"💸 <b>에너지 결제 주소 입금</b> — {esc(why)}\n"
-            f"<blockquote>{money.fmt(d.value)} {d.token} · 보낸 주소 <code>{esc(d.sender)}</code>\n"
+            f"<blockquote>{money.fmt(d.value)} {d.token} · 보낸 주소 <code>{esc(d.sender)}</code>{who}\n"
             f"<a href=\"{SCAN_TX.format(d.txid)}\">거래 보기</a></blockquote>")
 
 
-def admin_review(o, supplier: str, why: str) -> str:
+def _order_lines(o, username: str | None) -> str:
+    refund = f"\n💸 손님이 알려 준 환불 주소 <code>{esc(o['refund_to'])}</code>" if o["refund_to"] else ""
+    return (f"손님 {user_tag(o['user_id'], username)}\n"
+            f"받을 지갑 <code>{esc(o['receiver'])}</code> · {o['energy']:,}\n"
+            f"받은 금액 {trx(o['amount'])} TRX · 보낸 주소 <code>{esc(o['payer'] or '-')}</code>\n"
+            f"입금 <code>{esc(o['txid'] or '-')}</code>{refund}")
+
+
+def admin_review(o, supplier: str, why: str, username: str | None = None) -> str:
     return (f"🔍 <b>에너지 주문 #{o['id']} 확인 필요</b> ({esc(supplier)})\n"
-            f"<blockquote>{esc(why)[:300]}\n받을 지갑 <code>{esc(o['receiver'])}</code> · {o['energy']:,}\n"
-            f"받은 금액 {trx(o['amount'])} TRX · 입금 <code>{esc(o['txid'] or '-')}</code></blockquote>\n"
-            f"공급처에서 접수 여부를 확인한 뒤 <code>/energy_done {o['id']} 메모</code>로 정리해 주십시오.")
+            f"<blockquote>{esc(why)[:300]}\n{_order_lines(o, username)}</blockquote>\n"
+            "1시간 안에 체인에서 에너지가 보이면 자동으로 완료됩니다. 공급처에서 접수 여부를 확인한 뒤 "
+            f"<code>/energy_done {o['id']} 메모</code>로 정리해 주십시오. (메모는 손님에게도 보입니다)")
 
 
-def admin_failed(o, why: str) -> str:
+def admin_failed(o, why: str, username: str | None = None) -> str:
     return (f"⚠️ <b>에너지 주문 #{o['id']} 실패 · 환불 필요</b>\n"
-            f"<blockquote>{esc(why)}\n받은 금액 {trx(o['amount'])} TRX · 보낸 주소 <code>{esc(o['payer'] or '-')}</code>\n"
-            f"입금 <code>{esc(o['txid'] or '-')}</code></blockquote>\n"
-            f"환불한 뒤 <code>/energy_done {o['id']} 환불</code>로 정리해 주십시오.")
+            f"<blockquote>{esc(why)}\n{_order_lines(o, username)}</blockquote>\n"
+            "⚠️ 보낸 주소가 거래소일 수 있습니다. <b>손님이 알려 준 환불 주소</b>로 보내 주십시오(손님에게 주소를 보내 달라고 안내했습니다).\n"
+            f"환불한 뒤 <code>/energy_done {o['id']} 환불했습니다</code>로 정리해 주십시오. (메모는 손님에게도 보입니다)")
+
+
+def admin_refund_to(o, username: str | None = None) -> str:
+    return (f"💸 <b>에너지 주문 #{o['id']} 환불 주소 도착</b> ({STATUS.get(o['status'], o['status'])})\n"
+            f"<blockquote>{_order_lines(o, username)}</blockquote>")
+
+
+def admin_auto_done(o) -> str:
+    return (f"✅ <b>에너지 주문 #{o['id']}</b> 확인 필요였던 주문이 체인에서 에너지가 보여 자동으로 완료되었습니다. "
+            "환불하지 마십시오.")
 
 
 def admin_low(name: str, bal: int | None) -> str:
@@ -322,9 +397,12 @@ def admin_summary(stats: dict, balances: dict, attention, suppliers: list[str], 
     bal = "\n".join(f"• {esc(n)} — " + (f"{trx(balances[n])} TRX" if balances.get(n) is not None else "확인 전/실패")
                     for n in suppliers) or "• 없음"
     counts = " · ".join(f"{STATUS.get(k, k)} {v['n']}" for k, v in sorted(stats.items())) or "주문 없음"
-    att = "\n".join(f"#{o['id']} {STATUS.get(o['status'])} · {esc(o['note'][:60])}" for o in attention) or "없음"
+    att = "\n".join(f"#{o['id']} {STATUS.get(o['status'])} · {esc(o['note'][:60])}"
+                    + (f" · 환불 주소 <code>{esc(o['refund_to'])}</code>" if o["refund_to"] else "")
+                    for o in attention) or "없음"
     return ("⚡ <b>에너지 임대 현황</b> (최근 24시간)\n\n"
             f"<blockquote>{counts}\n완료 매출 {trx(done_['amount'])} TRX · 원가 {trx(done_['cost'])} TRX</blockquote>\n\n"
             f"💳 <b>공급처 잔고</b>\n<blockquote>{bal}</blockquote>\n\n"
             f"📥 결제 주소 <code>{esc(pay_address)}</code>\n\n"
-            f"🔍 <b>확인 필요</b>\n<blockquote>{att}</blockquote>")
+            f"🔍 <b>확인 필요</b>\n<blockquote>{att}</blockquote>\n\n"
+            "<code>/energy_done 주문번호 메모</code> 정리(손님에게 알림) · <code>/energy_msg 주문번호 내용</code> 손님에게 메시지")

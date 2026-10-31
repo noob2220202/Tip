@@ -24,6 +24,13 @@ SCAN_ADDR = "https://tronscan.org/#/address/{}"
 SMALL = 1_000_000   # 이보다 작은 입금에는 주소 위장 스팸 경고를 붙인다 (1.0)
 
 TEXTS: dict[str, list[str]] = {
+    # 공통 안내(core/texts.py)를 이 봇의 합쇼체로 덮어쓴다
+    "gate_intro": ["📢 아래 채널 {count}곳을 먼저 <b>구독</b>해 주십시오. 👇\n구독하신 뒤 <u>가입했어요</u>를 누르시면 바로 이어서 진행합니다."],
+    "gate_business": ["🤝 대화창 명령어를 쓰시려면 아래 채널 {count}곳을 먼저 <b>구독</b>해 주십시오. 👇\n"
+                      "구독하고 <u>가입했어요</u>를 누르신 뒤, 대화창에서 명령어를 <b>한 번 더</b> 입력해 주십시오."],
+    "gate_ok": ["✅ 확인했습니다."],
+    "gate_missing": ["아직 구독하지 않은 채널이 있습니다: {missing}. 구독하신 뒤 다시 눌러 주십시오."],
+    "error": ["⚠️ 처리 중 문제가 생겼습니다. 잠시 뒤에 다시 시도해 주십시오."],
     "start": [
         "💼 <b>지갑 알림 봇</b>에 오신 것을 환영합니다.\n\n"
         "<blockquote>📥 내 <b>TRON 지갑</b>(최대 3개)에 <b>USDT·TRX가 입금</b>되면 바로 알려 드립니다.\n"
@@ -278,6 +285,13 @@ def daily_text(q: Quote) -> str:
 
 LOOKUP_ASK = ("🔎 조회할 <b>TRON 주소</b>를 함께 보내 주십시오.\n"
               "예) <code>/조회 T...</code> · 주소가 담긴 메시지에 답장하며 <code>/조회</code>")
+LOOKUP_ASK_BIZ = ("🔎 대화창에서 조회할 주소를 찾지 못했습니다. (이 안내는 회원님께만 보입니다)\n"
+                  "<blockquote><code>/조회 T...</code>처럼 주소를 붙이시거나, 주소가 담긴 메시지에 <b>답장</b>하며 "
+                  "<code>/조회</code>를 입력해 주십시오.</blockquote>")
+SLOW_DOWN = "⏳ 조회가 너무 잦습니다. 1분쯤 뒤에 다시 시도해 주십시오."
+BIZ_REPLY_FAIL = ("⚠️ 대화창에 답장하지 못했습니다. (이 안내는 회원님께만 보입니다)\n"
+                  "<blockquote>텔레그램 규칙상 <b>상대가 24시간 안에 메시지를 보낸 대화</b>에서만 봇이 답할 수 있습니다. "
+                  "설정 → 텔레그램 비즈니스 → 챗봇에서 <b>메시지 답장</b> 권한이 켜져 있는지도 확인해 주십시오.</blockquote>")
 
 
 def lookup_text(address: str, usdt: int, acct: Account, quote: Quote | None) -> str:
@@ -302,7 +316,9 @@ def lookup_text(address: str, usdt: int, acct: Account, quote: Quote | None) -> 
 # ---- /환율 ----
 
 RATE_BAD = ("💱 금액을 이해하지 못했습니다.\n"
-            "예) <code>/환율 100</code> (USDT) · <code>/환율 10만원</code> · <code>/환율 50trx</code> · <code>/환율 $20</code>")
+            "예) <code>/환율 100</code> (USDT) · <code>/환율 10만원</code> · <code>/환율 1억5천만</code> · "
+            "<code>/환율 50trx</code> · <code>/환율 $20</code>")
+FX_FAIL = "⚠️ 기준 환율을 가져오지 못해 달러는 계산할 수 없습니다. 잠시 뒤에 다시 시도해 주십시오."
 
 
 def _n(d: Decimal, places: int = 2) -> str:
@@ -310,15 +326,16 @@ def _n(d: Decimal, places: int = 2) -> str:
     return f"{q:,.{places}f}"
 
 
-def rate_text(q: Quote, amount: tuple[Decimal, str] | None = None) -> str:
+def rate_text(q: Quote, amount: tuple[Decimal, str] | None = None, tip: bool = True) -> str:
     usdt, trx = Decimal(str(q.usdt_krw)), Decimal(str(q.trx_krw))
     fx = Decimal(str(q.fx)) if q.fx else None
     if amount is None:
         kimp = f" (김프 {q.kimp:+.2f}%)" if q.kimp is not None else ""
         fx_line = f"🌐 1 USD — <b>{_n(fx)}원</b>\n" if fx else ""
         body = (f"{fx_line}💵 1 USDT — <b>{_n(usdt, 0)}원</b>{kimp}\n🪙 1 TRX — <b>{_n(trx)}원</b>")
-        tip = "\n\n💡 금액을 붙이면 바로 계산합니다. <code>/환율 100</code> · <code>/환율 10만원</code> · <code>/환율 50trx</code>"
-        return f"💱 <b>환율</b>\n\n<blockquote>{body}</blockquote>\n\n{_basis(q)}{tip}"
+        hint = ("\n\n💡 금액을 붙이면 바로 계산합니다. <code>/환율 100</code> · <code>/환율 10만원</code> · "
+                "<code>/환율 50trx</code>") if tip else ""
+        return f"💱 <b>환율</b>\n\n<blockquote>{body}</blockquote>\n\n{_basis(q)}{hint}"
     value, unit = amount
     if unit == "USDT":
         won = value * usdt
@@ -333,7 +350,7 @@ def rate_text(q: Quote, amount: tuple[Decimal, str] | None = None) -> str:
             rows.append(f"= {_n(value / fx)} USD (기준 환율)")
     else:
         if not fx:
-            return "⚠️ 기준 환율을 가져오지 못해 달러는 계산할 수 없습니다. 잠시 뒤에 다시 시도해 주십시오."
+            return FX_FAIL
         won = value * fx
         head = f"🌐 <b>{_n(value)} USD</b>"
         rows = [f"= <b>{_n(won, 0)}원</b> (기준 환율)", f"= {_n(won / usdt)} USDT (빗썸)"]
@@ -356,17 +373,23 @@ def business_guide(username: str) -> str:
         "3️⃣ 권한에서 <b>메시지 답장</b>을 켜 주십시오\n"
         "4️⃣ 대화창에서 <code>/조회 T...</code>처럼 입력</blockquote>\n\n"
         "🔒 명령어는 <b>연결하신 본인</b>이 입력할 때만 동작합니다. 대화 상대가 입력해도 반응하지 않습니다.\n"
-        "🔒 봇은 명령어와 지갑 주소만 처리하고 <b>대화 내용을 저장하지 않습니다.</b>\n"
+        "🔒 대화창에는 <b>결과만</b> 올리고, 사용법·오류 안내는 이 봇 대화로 회원님께만 보내 드립니다.\n"
+        "🔒 봇은 대화 내용을 저장하지 않습니다. <code>/조회</code>만 쳤을 때 쓰려고 대화마다 <b>마지막으로 나온 지갑 주소 하나</b>만 "
+        "봇이 다시 시작될 때까지 메모리에 두며, 그 메시지가 지워지거나 고쳐지면 같이 지우거나 바꿉니다.\n"
+        "⏰ 텔레그램 규칙상 <b>상대가 24시간 안에 메시지를 보낸 대화</b>에서만 답할 수 있습니다.\n"
         "ℹ️ 메뉴 이름은 앱 버전에 따라 조금 다를 수 있습니다. 봇이 보낸 답장은 상대에게 <b>내가 보낸 메시지</b>로 보입니다."
     )
 
 
-def business_connected(enabled: bool, can_reply: bool) -> str:
+def business_connected(enabled: bool, can_reply: bool, need_join: bool = False) -> str:
     if not enabled:
         return "🤝 비즈니스 연결이 <b>해제</b>되었습니다. 대화창에서 더 이상 명령어에 답하지 않습니다."
     if not can_reply:
         return ("🤝 비즈니스 연결은 되었지만 <b>메시지 답장 권한</b>이 꺼져 있습니다.\n"
                 "설정 → 텔레그램 비즈니스 → 챗봇에서 <b>메시지 답장</b>을 켜 주십시오.")
+    if need_join:
+        return ("🤝 비즈니스 연결은 되었습니다. 대화창 명령어를 쓰시려면 아래 <b>채널을 먼저 구독</b>해 주십시오. 👇\n"
+                "구독하신 뒤 <b>가입했어요</b>를 누르시면 바로 쓰실 수 있습니다.")
     return ("✅ <b>비즈니스 연결</b>이 완료되었습니다.\n\n"
             "<blockquote>DM 대화창에서 <b>/조회</b> <code>T주소</code> · <b>/시세</b> · <b>/환율</b> <code>100</code>을 입력해 보십시오.</blockquote>\n"
-            "🔒 연결하신 본인이 입력할 때만 답합니다.")
+            "🔒 연결하신 본인이 입력할 때만 답합니다. ⏰ 상대가 24시간 안에 메시지를 보낸 대화에서만 답할 수 있습니다.")

@@ -6,7 +6,7 @@ import logging
 import time
 
 from bot.chain import RateLimited, TronError, TronReader
-from bot.energy import Desk
+from bot.energy import Desk, migrate
 from bot.notify import Notifier
 from bot.prices import Prices
 from bot.scanner import Scanner
@@ -90,7 +90,8 @@ def build_desk(db, chain: TronReader, notifier: Notifier, env) -> Desk:
                 margin=trx_to_sun(env.get("ENERGY_MARGIN_TRX") or 0),
                 max_loss=trx_to_sun(env.get("ENERGY_MAX_LOSS_TRX") or 1),
                 ttl=max(5, int(env.get("ENERGY_ORDER_MINUTES") or 10)) * 60,
-                low_balance=trx_to_sun(env.get("ENERGY_LOW_BALANCE_TRX") or 50))
+                low_balance=trx_to_sun(env.get("ENERGY_LOW_BALANCE_TRX") or 50),
+                support=(env.get("ENERGY_SUPPORT") or "").strip())
 
 
 async def on_startup(bot, db, cfg: BotConfig) -> dict:
@@ -99,6 +100,7 @@ async def on_startup(bot, db, cfg: BotConfig) -> dict:
     notifier = Notifier(bot, db, cfg.admin_ids)
     minutes = max(5, int(cfg.env.get("RECONCILE_MINUTES") or DEFAULT_RECONCILE_MIN))
     watcher = Watcher(db, chain, prices, notifier, reconcile_seconds=minutes * 60)
+    await migrate(db)
     desk = build_desk(db, chain, notifier, cfg.env)
     scanner = Scanner(db, chain, watcher, desk)
     tasks = [asyncio.create_task(_watch_loop(watcher), name="walletbot-watch"),
